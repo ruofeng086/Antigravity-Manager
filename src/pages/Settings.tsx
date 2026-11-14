@@ -11,7 +11,6 @@ import HelpTooltip from '../components/common/HelpTooltip';
 import { showToast } from '../components/common/ToastContainer';
 import { copyToClipboard } from '../utils/clipboard';
 import { cn } from '../utils/cn';
-import QuotaProtection from '../components/settings/QuotaProtection';
 import SmartWarmup from '../components/settings/SmartWarmup';
 import ClassicAutoSwitch from '../components/settings/ClassicAutoSwitch';
 import { motion } from 'framer-motion';
@@ -441,7 +440,7 @@ function Settings() {
             transition={{ duration: 0.2, ease: "easeOut" }}
             className="h-full w-full overflow-y-auto"
         >
-            <div className="p-5 space-y-4 max-w-7xl mx-auto">
+            <div className="p-5 sm:p-6 space-y-4 w-full">
                 {/* 顶部工具栏：Tab 导航和保存按钮 */}
                 <div className="flex justify-between items-center">
                     {/* Tab 导航 - 采用顶部导航栏样式：外层灰色容器 */}
@@ -946,34 +945,6 @@ function Settings() {
                                 />
                             </div>
 
-                            {/* 配额保护 (Quota Protection) */}
-                            <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-rose-200 transition-all duration-300 shadow-sm">
-                                <QuotaProtection
-                                    config={formData.quota_protection}
-                                    onChange={async (newConfig) => {
-                                        const updates: any = {
-                                            quota_protection: newConfig
-                                        };
-                                        // 联动逻辑：开启配额保护时，强制开启后台自动刷新 (不仅仅是预热)
-                                        if (newConfig.enabled) {
-                                            updates.auto_refresh = true;
-                                        }
-
-                                        const newFormData = {
-                                            ...formData,
-                                            ...updates
-                                        };
-                                        setFormData(newFormData);
-
-                                        // Hot Save
-                                        try {
-                                            await saveConfig(newFormData);
-                                        } catch (error) {
-                                            showToast(`${t('common.error')}: ${error}`, 'error');
-                                        }
-                                    }}
-                                />
-                            </div>
                         </div>
                     )}
 

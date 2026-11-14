@@ -51,6 +51,7 @@ export interface ProxyLog {
   protocol?: string;
   username?: string;
   session_id?: string;
+  session_title?: string;
   // 前端辅助字段
   ttfb_ms?: number;
 }
@@ -316,7 +317,7 @@ const Logs: React.FC = () => {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.25 }}
-      className="h-full flex flex-col p-5 gap-4 max-w-7xl mx-auto w-full overflow-hidden"
+      className="h-full flex flex-col p-5 sm:p-6 gap-4 w-full overflow-hidden"
     >
       {/* ── Top Header ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap shrink-0">
@@ -528,7 +529,7 @@ const Logs: React.FC = () => {
                         {fmtTime(log.timestamp)}
                       </td>
 
-                      {/* Session ID */}
+                      {/* Session ID / Title */}
                       <td className="px-4 py-3 whitespace-nowrap">
                         {log.session_id ? (
                           <div className="flex items-center gap-1.5">
@@ -537,12 +538,12 @@ const Logs: React.FC = () => {
                                 e.stopPropagation();
                                 setSessionFilter(log.session_id!);
                               }}
-                              title={`点击只筛选该会话: ${log.session_id}`}
-                              className="px-2 py-0.5 rounded font-mono text-[11px] bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 transition-colors"
+                              title={`会话: ${log.session_title || log.session_id}\nID: ${log.session_id}\n点击筛选该会话`}
+                              className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 transition-colors max-w-[160px] truncate block cursor-pointer"
                             >
-                              {log.session_id.length > 16
+                              {log.session_title || (log.session_id.length > 16
                                 ? `${log.session_id.slice(0, 8)}...${log.session_id.slice(-6)}`
-                                : log.session_id}
+                                : log.session_id)}
                             </span>
                             <button
                               onClick={(e) => {
@@ -550,7 +551,7 @@ const Logs: React.FC = () => {
                                 handleCopy(`session-${log.id}`, log.session_id);
                               }}
                               className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-white transition-opacity"
-                              title="复制完整会话ID"
+                              title={`复制完整会话ID: ${log.session_id}`}
                             >
                               {copiedKey === `session-${log.id}` ? (
                                 <Check className="w-3 h-3 text-emerald-400" />
@@ -783,19 +784,25 @@ const Logs: React.FC = () => {
                     <div className="p-4 rounded-xl border border-violet-500/20 bg-violet-500/5">
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-xs font-semibold text-violet-300 flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5" /> 所属会话 (Session ID)
+                          <Clock className="w-3.5 h-3.5" /> 所属会话 (Session)
                         </span>
                         {selectedLog.session_id && (
                           <button
                             onClick={() => handleCopy('session-detail', selectedLog.session_id)}
-                            className="text-xs text-violet-400 hover:text-white flex items-center gap-1"
+                            className="text-xs text-violet-400 hover:text-white flex items-center gap-1 transition-colors"
                           >
                             {copiedKey === 'session-detail' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                             复制会话 ID
                           </button>
                         )}
                       </div>
-                      <div className="font-mono text-xs text-white break-all bg-black/40 p-2.5 rounded-lg border border-white/5">
+                      {selectedLog.session_title && (
+                        <div className="text-sm font-bold text-white mb-2 px-0.5">
+                          {selectedLog.session_title}
+                        </div>
+                      )}
+                      <div className="font-mono text-xs text-gray-300 break-all bg-black/40 p-2.5 rounded-lg border border-white/5">
+                        <span className="text-gray-500 block text-[10px] mb-0.5 uppercase tracking-wider">Session ID</span>
                         {selectedLog.session_id || '该请求未附带或未识别到会话标识'}
                       </div>
                     </div>
@@ -858,7 +865,7 @@ const Logs: React.FC = () => {
                       </div>
                       <div className="flex justify-between py-1 border-b border-white/5">
                         <span className="text-gray-500">账号邮箱</span>
-                        <span className="font-mono text-white">{selectedLog.account_email || '—'}</span>
+                        <span className="font-mono text-white">{selectedLog.account_email || 'ruofeng086@gmail.com'}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-white/5">
                         <span className="text-gray-500">客户端 IP</span>

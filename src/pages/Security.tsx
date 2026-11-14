@@ -47,7 +47,7 @@ const Security: React.FC = () => {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
-            className="h-full flex flex-col p-5 gap-4 max-w-7xl mx-auto w-full"
+            className="h-full flex flex-col p-5 sm:p-6 gap-4 w-full"
         >
             <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">

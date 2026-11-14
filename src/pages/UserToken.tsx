@@ -234,7 +234,7 @@ const UserToken: React.FC = () => {
         <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="h-full flex flex-col p-5 gap-5 max-w-7xl mx-auto w-full"
+            className="h-full flex flex-col p-5 sm:p-6 gap-5 w-full"
         >
             {/* Header */}
             <div className="flex justify-between items-center">

@@ -851,6 +851,7 @@ pub fn run() {
             commands::get_antigravity_path,
             commands::get_antigravity_cli_path,
             commands::get_antigravity_args,
+            commands::get_antigravity_token_archive_data,
             commands::check_for_updates,
             commands::check_native_update,
             commands::check_homebrew_installation,

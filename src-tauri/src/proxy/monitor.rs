@@ -43,6 +43,8 @@ pub struct ProxyRequestLog {
     pub username: Option<String>, // User token username
     #[serde(default)]
     pub session_id: Option<String>, // 会话标识 (如 sess-xxx)
+    #[serde(default)]
+    pub session_title: Option<String>, // 会话名称 (如 "合作模式卡死排查")
 }
 
 impl ProxyRequestLog {

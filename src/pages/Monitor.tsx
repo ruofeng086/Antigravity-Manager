@@ -68,6 +68,7 @@ interface ProxyLog {
   timestamp?: number;
   account_email?: string;
   session_id?: string;
+  session_title?: string;
   response_headers?: string;
 }
 
@@ -358,7 +359,7 @@ const Monitor: React.FC = () => {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.25 }}
-      className="h-full flex flex-col p-5 gap-5 max-w-7xl mx-auto w-full overflow-y-auto"
+      className="h-full flex flex-col p-5 sm:p-6 gap-5 w-full overflow-y-auto"
     >
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -619,25 +620,25 @@ const Monitor: React.FC = () => {
                         {fmtTime(time)}
                       </td>
 
-                      {/* Session ID */}
+                      {/* Session ID / Title */}
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         {log.session_id ? (
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-1.5">
                             <span
-                              title={log.session_id}
-                              className="px-1.5 py-0.5 rounded font-mono text-[10px] bg-violet-500/10 border border-violet-500/20 text-violet-300"
+                              title={`会话: ${log.session_title || log.session_id}\nID: ${log.session_id}`}
+                              className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/20 text-violet-300 max-w-[160px] truncate block"
                             >
-                              {log.session_id.length > 14
+                              {log.session_title || (log.session_id.length > 14
                                 ? `${log.session_id.slice(0, 6)}...${log.session_id.slice(-4)}`
-                                : log.session_id}
+                                : log.session_id)}
                             </span>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleCopy(`mon-session-${idx}`, log.session_id);
                               }}
-                              className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-400 hover:text-white"
-                              title="复制会话 ID"
+                              className="opacity-0 group-hover:opacity-100 p-0.5 text-gray-400 hover:text-white transition-opacity"
+                              title={`复制会话 ID: ${log.session_id}`}
                             >
                               {copiedKey === `mon-session-${idx}` ? (
                                 <Check className="w-3 h-3 text-emerald-400" />

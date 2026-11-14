@@ -1289,6 +1289,26 @@ pub async fn get_antigravity_args() -> Result<Vec<String>, String> {
     }
 }
 
+/// 获取 Antigravity Token 历史归档数据
+#[tauri::command]
+pub async fn get_antigravity_token_archive_data() -> Result<String, String> {
+    if let Some(root) = crate::modules::antigravity_sync::get_antigravity_root_dir() {
+        let v2 = root.join("token_usage_archive_v2.json");
+        if v2.exists() {
+            if let Ok(c) = std::fs::read_to_string(&v2) {
+                return Ok(c);
+            }
+        }
+        let v1 = root.join("token_usage_archive_v1.json");
+        if v1.exists() {
+            if let Ok(c) = std::fs::read_to_string(&v1) {
+                return Ok(c);
+            }
+        }
+    }
+    Err("token_usage_archive not found".to_string())
+}
+
 /// 检测更新响应结构
 pub use crate::modules::update_checker::UpdateInfo;
 

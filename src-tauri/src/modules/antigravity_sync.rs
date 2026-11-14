@@ -110,6 +110,27 @@ pub fn resolve_actual_model_from_db(cascade_id: &str) -> Option<String> {
     last_match
 }
 
+/// 从会话概要数据库 conversation_summaries.db 中查询会话真实名称 (如 "合作模式卡死排查")
+pub fn resolve_session_title_from_db(cascade_id: &str) -> Option<String> {
+    let root = get_antigravity_root_dir()?;
+    let db_path = root.join("conversation_summaries.db");
+    if !db_path.exists() {
+        return None;
+    }
+
+    let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT title FROM conversation_summaries WHERE conversation_id = ?1 LIMIT 1")
+        .ok()?;
+    let title: String = stmt.query_row(params![cascade_id], |row| row.get(0)).ok()?;
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// 同步 Antigravity Desktop 最近请求记录入库
 pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, String> {
     let ledger_path = match get_pricing_ledger_path() {
@@ -130,7 +151,47 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
     let db_path = crate::modules::proxy_db::get_proxy_db_path()?;
     let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
 
-    // 1. 清理历史上残留的内部 /internal/warmup 记录，保持视图纯净
+    // 0. 确保 session_title 字段存在
+    let _ = conn.execute("ALTER TABLE request_logs ADD COLUMN session_title TEXT", []);
+
+    // 1. 获取当前活跃账号邮箱，并补充到历史记录中
+    let active_email = crate::modules::account::get_current_account()
+        .ok()
+        .flatten()
+        .map(|a| a.email)
+        .or_else(|| {
+            crate::modules::account::load_accounts()
+                .ok()
+                .and_then(|accs| accs.into_iter().find(|a| a.is_active).map(|a| a.email))
+        })
+        .or_else(|| {
+            crate::modules::account::load_accounts()
+                .ok()
+                .and_then(|accs| accs.into_iter().next().map(|a| a.email))
+        });
+
+    if let Some(ref email) = active_email {
+        let _ = conn.execute(
+            "UPDATE request_logs SET account_email = ?1 WHERE account_email IS NULL OR account_email = ''",
+            params![email],
+        );
+    }
+
+    // 2. 自动回填已有会话记录的 session_title
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT session_id FROM request_logs WHERE session_id IS NOT NULL AND (session_title IS NULL OR session_title = '')") {
+        if let Ok(sids) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+            for sid in sids.flatten() {
+                if let Some(title) = resolve_session_title_from_db(&sid) {
+                    let _ = conn.execute(
+                        "UPDATE request_logs SET session_title = ?1 WHERE session_id = ?2",
+                        params![title, sid],
+                    );
+                }
+            }
+        }
+    }
+
+    // 3. 清理历史上残留的内部 /internal/warmup 记录，保持视图纯净
     let _ = conn.execute(
         "DELETE FROM request_logs WHERE url LIKE '%/internal/warmup%' OR method = 'WARMUP'",
         [],
@@ -204,6 +265,8 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
             "x-antigravity-source": r.source.as_deref().unwrap_or("desktop")
         }).to_string());
 
+        let session_title = session_id.as_deref().and_then(resolve_session_title_from_db);
+
         let log = ProxyRequestLog {
             id: call_id.clone(),
             timestamp,
@@ -214,7 +277,7 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
             model: requested_model.clone(),
             mapped_model: mapped_model.clone(),
             upstream_model: upstream_model.clone(),
-            account_email: None,
+            account_email: active_email.clone(),
             client_ip: Some("127.0.0.1".to_string()),
             error: None,
             request_body: None,
@@ -230,6 +293,7 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
             protocol: Some("antigravity-desktop".to_string()),
             username: Some("Antigravity Desktop".to_string()),
             session_id: session_id.clone(),
+            session_title: session_title.clone(),
         };
 
         let insert_res = conn.execute(
@@ -239,8 +303,8 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
                 input_tokens, output_tokens, cached_tokens, reasoning_tokens,
                 account_email, mapped_model, protocol, client_ip, username,
                 request_headers, upstream_request_headers, response_headers,
-                session_id, upstream_model
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                session_id, upstream_model, session_title
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 log.id,
                 log.timestamp,
@@ -267,6 +331,7 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
                 log.response_headers,
                 log.session_id,
                 log.upstream_model,
+                log.session_title,
             ],
         );
 

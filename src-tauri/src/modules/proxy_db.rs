@@ -444,6 +444,7 @@ pub fn init_db() -> Result<(), String> {
         [],
     );
     let _ = conn.execute("ALTER TABLE request_logs ADD COLUMN session_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE request_logs ADD COLUMN session_title TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE request_logs ADD COLUMN upstream_model TEXT",
         [],
@@ -563,6 +564,14 @@ fn map_request_log_row(row: &rusqlite::Row) -> rusqlite::Result<ProxyRequestLog>
             .get::<_, Option<String>>("upstream_model")
             .ok()
             .flatten(),
+        session_title: row
+            .get::<_, Option<String>>("session_title")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                let sid: Option<String> = row.get(23).unwrap_or(None);
+                sid.as_deref().and_then(crate::modules::antigravity_sync::resolve_session_title_from_db)
+            }),
     })
 }
 
@@ -2087,8 +2096,8 @@ fn save_log_with_connection(
     make_room(conn, budget, log_bytes)?;
 
     conn.execute(
-        "INSERT INTO request_logs (id, timestamp, method, url, status, duration, model, error, request_body, upstream_request_body, response_body, input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username, request_headers, upstream_request_headers, response_headers, session_id, upstream_model)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+        "INSERT INTO request_logs (id, timestamp, method, url, status, duration, model, error, request_body, upstream_request_body, response_body, input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username, request_headers, upstream_request_headers, response_headers, session_id, upstream_model, session_title)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
         params![
             log.id,
             log.timestamp,
@@ -2115,6 +2124,7 @@ fn save_log_with_connection(
             log.response_headers,
             log.session_id,
             log.upstream_model,
+            log.session_title,
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -2131,7 +2141,7 @@ pub fn get_logs_summary(limit: usize, offset: usize) -> Result<Vec<ProxyRequestL
                 NULL as request_body, NULL as upstream_request_body, NULL as response_body,
                 input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
                 NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model
+                session_id, upstream_model, session_title
          FROM request_logs 
          ORDER BY timestamp DESC 
          LIMIT ?1 OFFSET ?2",
@@ -2188,7 +2198,7 @@ pub fn get_log_detail(log_id: &str) -> Result<ProxyRequestLog, String> {
                 request_body, upstream_request_body, response_body, input_tokens, output_tokens,
                 cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
                 request_headers, upstream_request_headers, response_headers,
-                session_id, upstream_model
+                session_id, upstream_model, session_title
          FROM request_logs
          WHERE id = ?1",
         )
@@ -3167,7 +3177,7 @@ pub fn get_logs_filtered(
                 NULL as request_body, NULL as upstream_request_body, NULL as response_body,
                 input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
                 NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model
+                session_id, upstream_model, session_title
          FROM request_logs
          WHERE (status < 200 OR status >= 400)
          ORDER BY timestamp DESC
@@ -3177,7 +3187,7 @@ pub fn get_logs_filtered(
                 NULL as request_body, NULL as upstream_request_body, NULL as response_body,
                 input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
                 NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model
+                session_id, upstream_model, session_title
          FROM request_logs
          ORDER BY timestamp DESC
          LIMIT ?1 OFFSET ?2"
@@ -3186,9 +3196,9 @@ pub fn get_logs_filtered(
                 NULL as request_body, NULL as upstream_request_body, NULL as response_body,
                 input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
                 NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model
+                session_id, upstream_model, session_title
          FROM request_logs
-         WHERE (url LIKE ?3 OR method LIKE ?3 OR model LIKE ?3 OR CAST(status AS TEXT) LIKE ?3 OR account_email LIKE ?3 OR client_ip LIKE ?3 OR session_id LIKE ?3)
+         WHERE (url LIKE ?3 OR method LIKE ?3 OR model LIKE ?3 OR CAST(status AS TEXT) LIKE ?3 OR account_email LIKE ?3 OR client_ip LIKE ?3 OR session_id LIKE ?3 OR session_title LIKE ?3)
          ORDER BY timestamp DESC
          LIMIT ?1 OFFSET ?2"
     };
@@ -3229,7 +3239,7 @@ pub fn get_all_logs_for_export() -> Result<Vec<ProxyRequestLog>, String> {
                 request_body, upstream_request_body, response_body, input_tokens, output_tokens,
                 cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
                 request_headers, upstream_request_headers, response_headers,
-                session_id, upstream_model
+                session_id, upstream_model, session_title
          FROM request_logs
          ORDER BY timestamp DESC",
         )
