@@ -39,7 +39,7 @@ jobs:
             target: aarch64-apple-darwin
             tauri_cmd: npm run tauri build -- --target aarch64-apple-darwin --bundles dmg
           - name: macOS (Intel x64)
-            platform: macos-13
+            platform: macos-latest
             os: macos-x64
             target: x86_64-apple-darwin
             tauri_cmd: npm run tauri build -- --target x86_64-apple-darwin --bundles dmg
