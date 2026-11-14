@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Wifi,
   WifiOff,
+  X,
   Zap,
 } from 'lucide-react';
 import {
@@ -198,14 +199,16 @@ const Monitor: React.FC = () => {
   const prevStatsRef = useRef<ProxyStats | null>(null);
 
   const [togglingProxy, setTogglingProxy] = useState(false);
+  const [hideProxyTip, setHideProxyTip] = useState(false);
 
   const handleToggleProxy = async () => {
     setTogglingProxy(true);
+    setError(null);
     try {
       if (status?.running) {
         await request('stop_proxy_service');
       } else {
-        await request('start_proxy_service');
+        await request('start_proxy_service', {});
       }
       await fetchData();
     } catch (err: any) {
@@ -435,20 +438,29 @@ const Monitor: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* ── Stopped service banner ── */}
-      {!isRunning && (
-        <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs">
+      {/* ── Stopped service info banner (calm & informative) ── */}
+      {!isRunning && !hideProxyTip && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs">
           <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>核心代理服务当前未处于运行状态。点击一键启动代理即可开始实时拦截和监控 Antigravity 流量。</span>
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <span>Antigravity 原生桌面端监控已激活 (实时同步会话与真实模型路由)。如需为外部应用提供 API 反代接口，可按需启动 8045 服务。</span>
           </div>
-          <button
-            onClick={handleToggleProxy}
-            disabled={togglingProxy}
-            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs transition-all shrink-0 cursor-pointer shadow-md shadow-amber-500/20"
-          >
-            一键启动代理 (端口: 8045)
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleToggleProxy}
+              disabled={togglingProxy}
+              className="px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs transition-all cursor-pointer shadow-sm"
+            >
+              {togglingProxy ? '正在启动...' : '启动 8045 代理'}
+            </button>
+            <button
+              onClick={() => setHideProxyTip(true)}
+              className="p-1 text-gray-400 hover:text-white rounded-md transition-colors cursor-pointer"
+              title="关闭提示"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 

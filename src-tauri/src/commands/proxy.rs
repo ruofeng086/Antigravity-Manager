@@ -65,13 +65,19 @@ impl ProxyServiceState {
 /// 启动反代服务 (Tauri 命令)
 #[tauri::command]
 pub async fn start_proxy_service(
-    config: ProxyConfig,
+    config: Option<ProxyConfig>,
     state: State<'_, ProxyServiceState>,
     cf_state: State<'_, crate::commands::cloudflared::CloudflaredState>,
     app_handle: tauri::AppHandle,
 ) -> Result<ProxyStatus, String> {
+    let resolved_config = match config {
+        Some(c) => c,
+        None => crate::modules::config::load_app_config()
+            .map(|c| c.proxy)
+            .unwrap_or_default(),
+    };
     let result = internal_start_proxy_service(
-        config,
+        resolved_config,
         &state,
         crate::modules::integration::SystemManager::Desktop(app_handle),
         Arc::new(cf_state.inner().clone()),

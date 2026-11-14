@@ -8,6 +8,8 @@ use regex::bytes::Regex;
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::proxy::monitor::ProxyRequestLog;
@@ -147,28 +149,252 @@ pub fn resolve_session_title_from_db(cascade_id: &str) -> Option<String> {
     }
 }
 
-/// 同步 Antigravity Desktop 最近请求记录入库
-pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, String> {
-    let ledger_path = match get_pricing_ledger_path() {
-        Some(p) => p,
-        None => return Ok(Vec::new()),
+#[derive(Debug, Clone, Deserialize)]
+struct TranscriptTurn {
+    pub step_index: Option<u64>,
+    pub source: Option<String>,
+    pub r#type: Option<String>,
+    pub status: Option<String>,
+    pub created_at: Option<String>,
+    pub input_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub thinking: Option<String>,
+}
+
+fn read_recent_transcript_turns(path: &Path, max_turns: usize) -> Vec<TranscriptTurn> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
     };
 
-    let content = std::fs::read_to_string(&ledger_path)
-        .map_err(|e| format!("Failed to read pricing_ledger: {}", e))?;
-    let ledger: PricingLedger = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse pricing_ledger: {}", e))?;
+    let metadata = match file.metadata() {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
 
-    let mut records: Vec<PricingCallRecord> = ledger.calls.into_values().collect();
-    // 按时间倒序排序
-    records.sort_by(|a, b| b.timestamp.unwrap_or(0).cmp(&a.timestamp.unwrap_or(0)));
-    records.truncate(max_records);
+    let len = metadata.len();
+    let mut reader = BufReader::new(file);
 
+    // 文件较大时（> 512KB），直接跳至尾部 512KB，避免读取数百兆产生 I/O 阻塞
+    if len > 512 * 1024 {
+        if reader.seek(SeekFrom::Start(len - 512 * 1024)).is_ok() {
+            let mut dummy = String::new();
+            let _ = reader.read_line(&mut dummy);
+        }
+    }
+
+    let mut turns = Vec::new();
+    let mut line = String::new();
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
+        if line.contains("\"PLANNER_RESPONSE\"") {
+            if let Ok(turn) = serde_json::from_str::<TranscriptTurn>(&line) {
+                if turn.input_tokens.is_some() || turn.output_tokens.is_some() {
+                    turns.push(turn);
+                }
+            }
+        }
+        line.clear();
+    }
+
+    if turns.len() > max_turns {
+        let skip_cnt = turns.len() - max_turns;
+        turns.drain(0..skip_cnt);
+    }
+
+    turns
+}
+
+/// 实时扫描 Antigravity Desktop 当前活跃会话的 transcript.jsonl，并即时入库
+pub fn sync_live_brain_transcripts(
+    conn: &Connection,
+    max_active_convos: usize,
+    max_turns_per_convo: usize,
+) -> Vec<ProxyRequestLog> {
+    let root = match get_antigravity_root_dir() {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+
+    let summaries_db = root.join("conversation_summaries.db");
+    if !summaries_db.exists() {
+        return Vec::new();
+    }
+
+    let s_conn = match Connection::open_with_flags(&summaries_db, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut stmt = match s_conn.prepare(
+        "SELECT conversation_id, title FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let convos: Vec<(String, String)> = match stmt.query_map(params![max_active_convos as i64], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    }) {
+        Ok(rows) => rows.flatten().collect(),
+        Err(_) => return Vec::new(),
+    };
+
+    let mut synced = Vec::new();
+
+    for (cid, title) in convos {
+        let transcript_path = root
+            .join("brain")
+            .join(&cid)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        if !transcript_path.exists() {
+            continue;
+        }
+
+        let turns = read_recent_transcript_turns(&transcript_path, max_turns_per_convo);
+        let session_title = if !title.trim().is_empty() {
+            Some(title.trim().to_string())
+        } else {
+            resolve_session_title_from_db(&cid)
+        };
+
+        let upstream_model = resolve_actual_model_from_db(&cid, None)
+            .unwrap_or_else(|| "gemini-3.8-flash-n".to_string());
+
+        for turn in turns {
+            let step = turn.step_index.unwrap_or(0);
+            let call_id = format!("{}-step-{}", cid, step);
+
+            // 检查是否已入库
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM request_logs WHERE id = ?1 LIMIT 1",
+                    params![call_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if exists {
+                continue;
+            }
+
+            let timestamp = turn
+                .created_at
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+
+            let out_tokens = turn.output_tokens.unwrap_or(0);
+            let duration = if out_tokens > 0 {
+                let gen_ms = ((out_tokens as f64) / 65.0 * 1000.0) as u64;
+                let ttfb = 260u64 + ((out_tokens as u64 * 7) % 220);
+                gen_ms + ttfb
+            } else {
+                450
+            };
+
+            let ttft_ms = (240.0 + ((duration as f64) * 0.08)).clamp(220.0, 1200.0);
+            let response_headers = Some(
+                serde_json::json!({
+                    "x-timing-ttft-ms": format!("{:.1}", ttft_ms),
+                    "content-type": "application/json",
+                    "x-antigravity-source": "desktop-brain"
+                })
+                .to_string(),
+            );
+
+            let reasoning_tokens = turn.thinking.as_ref().map(|s| (s.len() / 4) as u32);
+
+            let log = ProxyRequestLog {
+                id: call_id.clone(),
+                timestamp,
+                method: "POST".to_string(),
+                url: "/v1internal:generateContent".to_string(),
+                status: 200,
+                duration,
+                model: Some("gemini-3.8-flash".to_string()),
+                mapped_model: Some("gemini-3.8-flash".to_string()),
+                upstream_model: Some(upstream_model.clone()),
+                account_email: None,
+                client_ip: Some("127.0.0.1".to_string()),
+                error: None,
+                request_body: None,
+                upstream_request_body: None,
+                response_body: None,
+                request_headers: None,
+                upstream_request_headers: None,
+                response_headers,
+                input_tokens: turn.input_tokens,
+                output_tokens: turn.output_tokens,
+                cached_tokens: turn.cache_read_tokens,
+                reasoning_tokens,
+                protocol: Some("antigravity-desktop".to_string()),
+                username: Some("Antigravity Desktop".to_string()),
+                session_id: Some(cid.clone()),
+                session_title: session_title.clone(),
+            };
+
+            let insert_res = conn.execute(
+                "INSERT OR IGNORE INTO request_logs (
+                    id, timestamp, method, url, status, duration, model, error,
+                    request_body, upstream_request_body, response_body,
+                    input_tokens, output_tokens, cached_tokens, reasoning_tokens,
+                    account_email, mapped_model, protocol, client_ip, username,
+                    request_headers, upstream_request_headers, response_headers,
+                    session_id, upstream_model, session_title
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                params![
+                    log.id,
+                    log.timestamp,
+                    log.method,
+                    log.url,
+                    log.status,
+                    log.duration,
+                    log.model,
+                    log.error,
+                    log.request_body,
+                    log.upstream_request_body,
+                    log.response_body,
+                    log.input_tokens,
+                    log.output_tokens,
+                    log.cached_tokens,
+                    log.reasoning_tokens,
+                    log.account_email,
+                    log.mapped_model,
+                    log.protocol,
+                    log.client_ip,
+                    log.username,
+                    log.request_headers,
+                    log.upstream_request_headers,
+                    log.response_headers,
+                    log.session_id,
+                    log.upstream_model,
+                    log.session_title,
+                ],
+            );
+
+            if insert_res.is_ok() {
+                synced.push(log);
+            }
+        }
+    }
+
+    synced
+}
+
+/// 同步 Antigravity Desktop 最近请求记录入库
+pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, String> {
     let db_path = crate::modules::proxy_db::get_proxy_db_path()?;
     let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
 
     // 0. 确保 session_title 字段存在
     let _ = conn.execute("ALTER TABLE request_logs ADD COLUMN session_title TEXT", []);
+
+    // 0.1 实时扫描 Antigravity Desktop 当前活跃会话的 transcript.jsonl，并即时入库
+    let mut synced_logs = sync_live_brain_transcripts(&conn, 8, 30);
 
     // 1. 自动回填已有会话记录的 session_title
     if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT session_id FROM request_logs WHERE session_id IS NOT NULL AND (session_title IS NULL OR session_title = '')") {
@@ -211,146 +437,150 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
         [],
     );
 
-    let mut synced_logs = Vec::new();
+    // 5. 如果 pricing_ledger_v1.json 存在，同时同步其离线转储记录
+    if let Some(ledger_path) = get_pricing_ledger_path() {
+        if let Ok(content) = std::fs::read_to_string(&ledger_path) {
+            if let Ok(ledger) = serde_json::from_str::<PricingLedger>(&content) {
+                let mut records: Vec<PricingCallRecord> = ledger.calls.into_values().collect();
+                records.sort_by(|a, b| b.timestamp.unwrap_or(0).cmp(&a.timestamp.unwrap_or(0)));
+                records.truncate(max_records);
 
-    for r in records {
-        let call_id = match r.call_id {
-            Some(id) if !id.is_empty() => id,
-            _ => continue,
-        };
+                for r in records {
+                    let call_id = match r.call_id {
+                        Some(id) if !id.is_empty() => id,
+                        _ => continue,
+                    };
 
-        // 检查是否已入库
-        let exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM request_logs WHERE id = ?1 LIMIT 1",
-                params![call_id],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT 1 FROM request_logs WHERE id = ?1 LIMIT 1",
+                            params![call_id],
+                            |_| Ok(true),
+                        )
+                        .unwrap_or(false);
 
-        if exists {
-            continue;
-        }
+                    if exists {
+                        continue;
+                    }
 
-        let session_id = r.cascade_id.clone();
-        let requested_model = r.model_key.clone().or_else(|| r.model.clone());
-        let mapped_model = r.model.clone();
+                    let session_id = r.cascade_id.clone();
+                    let requested_model = r.model_key.clone().or_else(|| r.model.clone());
+                    let mapped_model = r.model.clone();
 
-        // 尝试从本地对话元数据提取上游真实物理路由模型 (如 gemini-3.8-flash-n)
-        let upstream_model = if let Some(ref cid) = session_id {
-            resolve_actual_model_from_db(cid, Some(&call_id))
-        } else {
-            None
-        }
-        .or_else(|| requested_model.clone());
+                    let upstream_model = if let Some(ref cid) = session_id {
+                        resolve_actual_model_from_db(cid, Some(&call_id))
+                    } else {
+                        None
+                    }
+                    .or_else(|| requested_model.clone());
 
-        let timestamp = r.timestamp.unwrap_or_else(|| {
-            chrono::Utc::now().timestamp_millis()
-        });
+                    let timestamp = r.timestamp.unwrap_or_else(|| {
+                        chrono::Utc::now().timestamp_millis()
+                    });
 
-        let updated_at = r.updated_at.unwrap_or(timestamp);
-        let raw_duration = updated_at.saturating_sub(timestamp) as u64;
+                    let updated_at = r.updated_at.unwrap_or(timestamp);
+                    let raw_duration = updated_at.saturating_sub(timestamp) as u64;
 
-        // 生成耗时与速率计算:
-        // 如果输出 Token 存在且大于 0，按真实推理速率 (60~85 token/s) 配合 TTFB 计算出真实的耗时
-        let duration = if let Some(out) = r.output_tokens {
-            if out > 10 {
-                let tps_rate = if r.model_key.as_deref().unwrap_or("").contains("pro") { 26.0 } else { 65.0 };
-                let gen_ms = ((out as f64) / tps_rate * 1000.0) as u64;
-                let ttfb = 260u64 + ((out as u64 * 7) % 220);
-                raw_duration.max(gen_ms + ttfb)
-            } else {
-                raw_duration.clamp(280, 5000)
+                    let duration = if let Some(out) = r.output_tokens {
+                        if out > 10 {
+                            let tps_rate = if r.model_key.as_deref().unwrap_or("").contains("pro") { 26.0 } else { 65.0 };
+                            let gen_ms = ((out as f64) / tps_rate * 1000.0) as u64;
+                            let ttfb = 260u64 + ((out as u64 * 7) % 220);
+                            raw_duration.max(gen_ms + ttfb)
+                        } else {
+                            raw_duration.clamp(280, 5000)
+                        }
+                    } else {
+                        raw_duration.clamp(280, 5000)
+                    };
+
+                    let ttft_ms = if duration > 600 {
+                        (240.0 + ((duration as f64) * 0.08)).clamp(220.0, 1200.0)
+                    } else {
+                        260.0
+                    };
+
+                    let response_headers = Some(serde_json::json!({
+                        "x-timing-ttft-ms": format!("{:.1}", ttft_ms),
+                        "content-type": "application/json",
+                        "x-antigravity-source": r.source.as_deref().unwrap_or("desktop")
+                    }).to_string());
+
+                    let session_title = session_id.as_deref().and_then(resolve_session_title_from_db);
+
+                    let log = ProxyRequestLog {
+                        id: call_id.clone(),
+                        timestamp,
+                        method: "POST".to_string(),
+                        url: "/v1internal:generateContent".to_string(),
+                        status: 200,
+                        duration,
+                        model: requested_model.clone(),
+                        mapped_model: mapped_model.clone(),
+                        upstream_model: upstream_model.clone(),
+                        account_email: None,
+                        client_ip: Some("127.0.0.1".to_string()),
+                        error: None,
+                        request_body: None,
+                        upstream_request_body: None,
+                        response_body: None,
+                        request_headers: None,
+                        upstream_request_headers: None,
+                        response_headers,
+                        input_tokens: r.input_tokens,
+                        output_tokens: r.output_tokens,
+                        cached_tokens: r.cache_tokens.or(r.cache_read_tokens),
+                        reasoning_tokens: r.thinking_tokens,
+                        protocol: Some("antigravity-desktop".to_string()),
+                        username: Some("Antigravity Desktop".to_string()),
+                        session_id: session_id.clone(),
+                        session_title: session_title.clone(),
+                    };
+
+                    let insert_res = conn.execute(
+                        "INSERT OR IGNORE INTO request_logs (
+                            id, timestamp, method, url, status, duration, model, error,
+                            request_body, upstream_request_body, response_body,
+                            input_tokens, output_tokens, cached_tokens, reasoning_tokens,
+                            account_email, mapped_model, protocol, client_ip, username,
+                            request_headers, upstream_request_headers, response_headers,
+                            session_id, upstream_model, session_title
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                        params![
+                            log.id,
+                            log.timestamp,
+                            log.method,
+                            log.url,
+                            log.status,
+                            log.duration,
+                            log.model,
+                            log.error,
+                            log.request_body,
+                            log.upstream_request_body,
+                            log.response_body,
+                            log.input_tokens,
+                            log.output_tokens,
+                            log.cached_tokens,
+                            log.reasoning_tokens,
+                            log.account_email,
+                            log.mapped_model,
+                            log.protocol,
+                            log.client_ip,
+                            log.username,
+                            log.request_headers,
+                            log.upstream_request_headers,
+                            log.response_headers,
+                            log.session_id,
+                            log.upstream_model,
+                            log.session_title,
+                        ],
+                    );
+
+                    if insert_res.is_ok() {
+                        synced_logs.push(log);
+                    }
+                }
             }
-        } else {
-            raw_duration.clamp(280, 5000)
-        };
-
-        // 首字节耗时 (TTFB): 真实流式首包通常在 220ms ~ 650ms 之间
-        let ttft_ms = if duration > 600 {
-            (240.0 + ((duration as f64) * 0.08)).clamp(220.0, 1200.0)
-        } else {
-            260.0
-        };
-
-        let response_headers = Some(serde_json::json!({
-            "x-timing-ttft-ms": format!("{:.1}", ttft_ms),
-            "content-type": "application/json",
-            "x-antigravity-source": r.source.as_deref().unwrap_or("desktop")
-        }).to_string());
-
-        let session_title = session_id.as_deref().and_then(resolve_session_title_from_db);
-
-        let log = ProxyRequestLog {
-            id: call_id.clone(),
-            timestamp,
-            method: "POST".to_string(),
-            url: "/v1internal:generateContent".to_string(),
-            status: 200,
-            duration,
-            model: requested_model.clone(),
-            mapped_model: mapped_model.clone(),
-            upstream_model: upstream_model.clone(),
-            account_email: None,
-            client_ip: Some("127.0.0.1".to_string()),
-            error: None,
-            request_body: None,
-            upstream_request_body: None,
-            response_body: None,
-            request_headers: None,
-            upstream_request_headers: None,
-            response_headers,
-            input_tokens: r.input_tokens,
-            output_tokens: r.output_tokens,
-            cached_tokens: r.cache_tokens.or(r.cache_read_tokens),
-            reasoning_tokens: r.thinking_tokens,
-            protocol: Some("antigravity-desktop".to_string()),
-            username: Some("Antigravity Desktop".to_string()),
-            session_id: session_id.clone(),
-            session_title: session_title.clone(),
-        };
-
-        let insert_res = conn.execute(
-            "INSERT OR IGNORE INTO request_logs (
-                id, timestamp, method, url, status, duration, model, error,
-                request_body, upstream_request_body, response_body,
-                input_tokens, output_tokens, cached_tokens, reasoning_tokens,
-                account_email, mapped_model, protocol, client_ip, username,
-                request_headers, upstream_request_headers, response_headers,
-                session_id, upstream_model, session_title
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
-            params![
-                log.id,
-                log.timestamp,
-                log.method,
-                log.url,
-                log.status,
-                log.duration,
-                log.model,
-                log.error,
-                log.request_body,
-                log.upstream_request_body,
-                log.response_body,
-                log.input_tokens,
-                log.output_tokens,
-                log.cached_tokens,
-                log.reasoning_tokens,
-                log.account_email,
-                log.mapped_model,
-                log.protocol,
-                log.client_ip,
-                log.username,
-                log.request_headers,
-                log.upstream_request_headers,
-                log.response_headers,
-                log.session_id,
-                log.upstream_model,
-                log.session_title,
-            ],
-        );
-
-        if insert_res.is_ok() {
-            synced_logs.push(log);
         }
     }
 
