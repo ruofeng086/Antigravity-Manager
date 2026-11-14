@@ -471,7 +471,7 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
         }
     }
 
-    // 3. 自动探测并回填原生桌面端会话记录的真实登录 Google 账号 (如 ruofeng086@gmail.com)
+    // 3. 自动探测并回填原生桌面端会话记录的真实登录 Google 账号 (如 user@gmail.com)
     let active_account = resolve_active_google_account();
     if let Some(ref email) = active_account {
         let _ = conn.execute(

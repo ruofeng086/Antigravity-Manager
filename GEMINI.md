@@ -19,7 +19,7 @@
    - 实时监控 Antigravity 当前使用的实际物理路由模型 (如 `gemini-3.8-flash-n`)、生成速度 (TPS tokens/sec)、单次响应耗时、TTFB 首字延迟与模型调用分布。
 4. **日志 (`src/pages/Logs.tsx`) [新增]**:
    - **会话级追踪 (Session ID)**：深度解析请求头与请求体，标记每个请求归属哪个会话，支持一键复制与快速单会话隔离过滤。
-   - **执行账号自动侦测**：自动从 `~/.gemini/google_accounts.json` 与 `state.vscdb` 探测当前真实发出请求的 Google 账号（如 `ruofeng086@gmail.com`），并以高亮翡翠绿徽章展示。
+   - **执行账号自动侦测**：自动从 `~/.gemini/google_accounts.json` 与 `state.vscdb` 探测本机真实发出请求的 Google 账号（如 `user@gmail.com`），并以高亮翡翠绿徽章展示。
    - **实际路由模型识别**：智能捕获 Antigravity 实际模型与配置不一致的情况（如配置 `gemini-3.8-flash` 实际路由为 `gemini-3.8-flash-control` / `gemini-3.8-flash-n`）。
    - **首字节延迟耗时 (TTFB / TTFT)**：毫秒级首包耗时检测，配备直观色标反馈。
    - **生成速率 (TPS)**：实时输出每秒产生 Token 数量（`⚡ xx.x t/s`）。
