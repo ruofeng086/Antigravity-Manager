@@ -7,7 +7,7 @@
 - **状态管理**: Zustand 5.0 (useConfigStore, useAccountStore, useViewStore, usePedalModeStore)
 - **多语言与主题**: i18next 25.7 + 深色/浅色自适应/深空赛博朋克 Observatory
 - **开源仓库**: [ruofeng086/Antigravity-Manager](https://github.com/ruofeng086/Antigravity-Manager.git)
-- **当前版本**: v1.0.5
+- **当前版本**: v1.0.6
 - **应用图标**: 独立透明无框 3D 反重力悬浮核心图标 (消除外围矩形与黑底，多分辨率 16x16 ~ 1024x1024, `.ico`, `.png`, Store Logo)
 
 ## 2. 核心功能模块 (六大核心功能)
@@ -42,5 +42,10 @@
 - 监控与日志页面集成 Document Visibility API，当应用最小化或处于后台标签时自动暂停轮询，将 CPU/内存占用降至最低。
 - 统计数据采用 useMemo 缓存计算结果，配合只读高性能流式解析，无重算卡顿。
 
-## 5. 持续集成与打包
-- GitHub Actions 工作流 `.github/workflows/build-windows.yml` 配置在 `windows-2025` 自动化编译 Tauri NSIS 安装包并发布到 GitHub Releases。
+## 5. 跨平台持续集成与全自动发布
+- GitHub Actions 工作流 `.github/workflows/release.yml` 支持四大矩阵构建与全平台原生安装包输出：
+  - **Windows (x64)**: `Antigravity-Manager-<version>-Setup.exe` (NSIS)
+  - **macOS (Apple Silicon arm64)**: `Antigravity-Manager-<version>-aarch64.dmg`
+  - **macOS (Intel x64)**: `Antigravity-Manager-<version>-x64.dmg`
+  - **Linux (x64)**: `Antigravity-Manager-<version>-amd64.AppImage` & `Antigravity-Manager_<version>_amd64.deb`
+- **中英双语优先发布 (English First)**：所有 GitHub Release 资产说明、核心特性与指引均遵循中英双语且英文优先的标准格式。

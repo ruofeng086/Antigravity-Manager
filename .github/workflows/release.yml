@@ -1,0 +1,184 @@
+name: Release Multi-Platform Packages
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish as a GitHub Release'
+        required: false
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release Tag (leave empty to auto-detect from package.json)'
+        required: false
+        default: ''
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (x64 NSIS)
+            platform: windows-2025
+            os: windows
+            tauri_cmd: npm run tauri build -- --bundles nsis
+          - name: macOS (Apple Silicon arm64)
+            platform: macos-latest
+            os: macos-arm64
+            target: aarch64-apple-darwin
+            tauri_cmd: npm run tauri build -- --target aarch64-apple-darwin --bundles dmg
+          - name: macOS (Intel x64)
+            platform: macos-13
+            os: macos-x64
+            target: x86_64-apple-darwin
+            tauri_cmd: npm run tauri build -- --target x86_64-apple-darwin --bundles dmg
+          - name: Linux (x64 AppImage & DEB)
+            platform: ubuntu-22.04
+            os: linux
+            tauri_cmd: npm run tauri build -- --bundles appimage,deb
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            perl \
+            pkg-config \
+            libclang-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libssl-dev \
+            xdg-utils
+
+      - name: Rust setup
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target || '' }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri"
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Disable updater artifacts without signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node scripts/disable-updater-without-key.mjs
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri Package
+        run: ${{ matrix.tauri_cmd }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Collect and Rename Installable Executables
+        run: node scripts/collect-artifacts.mjs ${{ matrix.os }}
+
+      - name: Upload Platform Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.os }}
+          path: dist-artifacts/*
+          retention-days: 14
+
+  publish-release:
+    name: Publish Cross-Platform Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release != 'false')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve Version and Tag
+        id: version_info
+        shell: bash
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          INPUT_TAG="${{ github.event.inputs.release_tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG_NAME="$INPUT_TAG"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+          else
+            TAG_NAME="v$PKG_VERSION"
+          fi
+          echo "version=$PKG_VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Resolved Version: $PKG_VERSION"
+          echo "Resolved Tag Name: $TAG_NAME"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: artifacts-*
+          merge-multiple: true
+
+      - name: Inspect collected assets
+        shell: bash
+        run: |
+          echo "=== Collected Release Assets ==="
+          ls -lh release-assets/
+
+      - name: Generate Bilingual Release Notes
+        shell: bash
+        run: |
+          node scripts/generate-release-notes.mjs "${{ steps.version_info.outputs.tag_name }}"
+
+      - name: Publish or Update GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          tag: ${{ steps.version_info.outputs.tag_name }}
+          name: "Antigravity Manager ${{ steps.version_info.outputs.tag_name }}"
+          bodyFile: "dist-release-body.md"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "release-assets/*"
+          artifactErrorsFailBuild: false
+          replacesArtifacts: true
+          prerelease: false
+          makeLatest: true
