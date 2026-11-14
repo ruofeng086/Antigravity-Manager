@@ -22,6 +22,7 @@ import {
 import { request } from '../utils/request';
 import { listen } from '@tauri-apps/api/event';
 import { isTauri } from '../utils/env';
+import Pagination from '../components/common/Pagination';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -141,7 +142,12 @@ const Logs: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [totalCount, setTotalCount] = useState<number>(0);
 
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(20);
+
   // Filters
+  const [searchInput, setSearchInput] = useState('');
   const [searchText, setSearchText] = useState('');
   const [sessionFilter, setSessionFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all');
@@ -155,52 +161,65 @@ const Logs: React.FC = () => {
   const visibleRef = useRef(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchLogs = useCallback(async () => {
+  // Debounce search input to avoid spamming backend on each keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchText(searchInput.trim());
+      setCurrentPage(1);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const fetchLogs = useCallback(async (targetPage = currentPage, targetPageSize = pageSize) => {
     try {
-      const filterStr = sessionFilter ? sessionFilter : searchText.trim();
-      const errorsOnly = statusFilter === 'error';
+      setLoading(true);
+      const filterStr = sessionFilter ? sessionFilter : searchText;
+      const offset = (targetPage - 1) * targetPageSize;
 
       const [resLogs, resCount] = await Promise.allSettled([
         request<ProxyLog[]>('get_proxy_logs_filtered', {
           filter: filterStr,
-          errorsOnly: errorsOnly,
-          errors_only: errorsOnly,
-          limit: 100,
-          offset: 0,
+          status: statusFilter,
+          modelFamily: modelFilter,
+          model_family: modelFilter,
+          errorsOnly: statusFilter === 'error',
+          errors_only: statusFilter === 'error',
+          limit: targetPageSize,
+          offset: offset,
         }),
         request<number>('get_proxy_logs_count_filtered', {
           filter: filterStr,
-          errorsOnly: errorsOnly,
-          errors_only: errorsOnly,
+          status: statusFilter,
+          modelFamily: modelFilter,
+          model_family: modelFilter,
+          errorsOnly: statusFilter === 'error',
+          errors_only: statusFilter === 'error',
         }),
       ]);
 
-      let logsList: ProxyLog[] = [];
-      if (resLogs.status === 'fulfilled' && Array.isArray(resLogs.value) && resLogs.value.length > 0) {
-        logsList = resLogs.value;
-      } else {
-        // Fallback to memory logs buffer if DB query returns empty
+      if (resLogs.status === 'fulfilled' && Array.isArray(resLogs.value)) {
+        setLogs(resLogs.value);
+      } else if (resLogs.status === 'rejected') {
+        console.warn('Failed to load proxy logs from DB:', resLogs.reason);
         try {
-          const memLogs = await request<ProxyLog[]>('get_proxy_logs', { limit: 100 });
-          if (Array.isArray(memLogs) && memLogs.length > 0) {
-            logsList = memLogs;
+          const memLogs = await request<ProxyLog[]>('get_proxy_logs', { limit: targetPageSize });
+          if (Array.isArray(memLogs)) {
+            setLogs(memLogs);
           }
         } catch (_) {}
       }
-      if (logsList.length > 0) {
-        setLogs(logsList);
-      }
+
       if (resCount.status === 'fulfilled' && typeof resCount.value === 'number') {
         setTotalCount(resCount.value);
-      } else if (logsList.length > 0) {
-        setTotalCount(logsList.length);
+      } else if (resLogs.status === 'fulfilled' && Array.isArray(resLogs.value)) {
+        setTotalCount(resLogs.value.length);
       }
     } catch (err) {
       console.error('Failed to load proxy logs:', err);
     } finally {
       setLoading(false);
     }
-  }, [searchText, sessionFilter, statusFilter]);
+  }, [searchText, sessionFilter, statusFilter, modelFilter, currentPage, pageSize]);
 
   // Initial fetch and auto refresh
   useEffect(() => {
@@ -230,7 +249,9 @@ const Logs: React.FC = () => {
     let unlistenFn: (() => void) | undefined;
     listen<ProxyLog>('proxy://request', (event) => {
       if (event.payload) {
-        setLogs((prev) => [event.payload, ...prev.slice(0, 199)]);
+        if (currentPage === 1 && !searchText && !sessionFilter && statusFilter === 'all' && modelFilter === 'all') {
+          setLogs((prev) => [event.payload, ...prev.slice(0, pageSize - 1)]);
+        }
         setTotalCount((c) => c + 1);
       }
     }).then((un) => {
@@ -240,28 +261,10 @@ const Logs: React.FC = () => {
     return () => {
       if (unlistenFn) unlistenFn();
     };
-  }, []);
+  }, [currentPage, searchText, sessionFilter, statusFilter, modelFilter, pageSize]);
 
-  // Filter logs locally if model filter is applied
-  const filteredLogs = React.useMemo(() => {
-    return logs.filter((log) => {
-      // Model family filter
-      if (modelFilter !== 'all') {
-        const m = (log.mapped_model || log.upstream_model || log.model || '').toLowerCase();
-        if (modelFilter === 'gemini' && !m.includes('gemini')) return false;
-        if (modelFilter === 'claude' && !m.includes('claude')) return false;
-        if (modelFilter === 'gpt' && !m.includes('gpt') && !m.includes('openai')) return false;
-      }
-      // Status filter
-      if (statusFilter === 'success' && (log.status < 200 || log.status >= 400)) return false;
-      if (statusFilter === 'error' && log.status < 400) return false;
-
-      // Session Filter
-      if (sessionFilter && log.session_id !== sessionFilter) return false;
-
-      return true;
-    });
-  }, [logs, modelFilter, statusFilter, sessionFilter]);
+  // Current page records (already filtered & paginated by backend)
+  const filteredLogs = logs;
 
   // Open Log Detail
   const handleOpenDetail = async (log: ProxyLog) => {
@@ -392,14 +395,18 @@ const Logs: React.FC = () => {
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
             <input
               type="text"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="搜索会话 ID / 模型名称 / URL / IP..."
               className="w-full pl-9 pr-3 py-1.5 rounded-lg text-xs bg-black/30 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-violet-500/50 transition-colors"
             />
-            {searchText && (
+            {searchInput && (
               <button
-                onClick={() => setSearchText('')}
+                onClick={() => {
+                  setSearchInput('');
+                  setSearchText('');
+                  setCurrentPage(1);
+                }}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
               >
                 <X className="w-3.5 h-3.5" />
@@ -411,7 +418,13 @@ const Logs: React.FC = () => {
           {sessionFilter && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-violet-500/15 border border-violet-500/30 text-violet-300 text-xs">
               <span>会话: {sessionFilter.slice(0, 14)}...</span>
-              <button onClick={() => setSessionFilter(null)} className="hover:text-white">
+              <button
+                onClick={() => {
+                  setSessionFilter(null);
+                  setCurrentPage(1);
+                }}
+                className="hover:text-white"
+              >
                 <X className="w-3 h-3" />
               </button>
             </div>
@@ -422,7 +435,10 @@ const Logs: React.FC = () => {
           {/* Status Segment */}
           <div className="flex items-center rounded-lg p-0.5 bg-black/30 border border-white/10 text-xs">
             <button
-              onClick={() => setStatusFilter('all')}
+              onClick={() => {
+                setStatusFilter('all');
+                setCurrentPage(1);
+              }}
               className={`px-2.5 py-1 rounded-md transition-colors ${
                 statusFilter === 'all' ? 'bg-violet-600 text-white font-medium' : 'text-gray-400 hover:text-white'
               }`}
@@ -430,7 +446,10 @@ const Logs: React.FC = () => {
               全部状态
             </button>
             <button
-              onClick={() => setStatusFilter('success')}
+              onClick={() => {
+                setStatusFilter('success');
+                setCurrentPage(1);
+              }}
               className={`px-2.5 py-1 rounded-md transition-colors ${
                 statusFilter === 'success' ? 'bg-emerald-600 text-white font-medium' : 'text-gray-400 hover:text-white'
               }`}
@@ -438,7 +457,10 @@ const Logs: React.FC = () => {
               成功 (2xx)
             </button>
             <button
-              onClick={() => setStatusFilter('error')}
+              onClick={() => {
+                setStatusFilter('error');
+                setCurrentPage(1);
+              }}
               className={`px-2.5 py-1 rounded-md transition-colors ${
                 statusFilter === 'error' ? 'bg-rose-600 text-white font-medium' : 'text-gray-400 hover:text-white'
               }`}
@@ -452,7 +474,10 @@ const Logs: React.FC = () => {
             <Filter className="w-3.5 h-3.5 text-gray-500 ml-2" />
             <select
               value={modelFilter}
-              onChange={(e) => setModelFilter(e.target.value as any)}
+              onChange={(e) => {
+                setModelFilter(e.target.value as any);
+                setCurrentPage(1);
+              }}
               className="bg-transparent text-gray-300 text-xs pr-3 py-1 focus:outline-none cursor-pointer"
             >
               <option value="all" className="bg-gray-900 text-white">所有模型家族</option>
@@ -537,6 +562,7 @@ const Logs: React.FC = () => {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSessionFilter(log.session_id!);
+                                setCurrentPage(1);
                               }}
                               title={`会话: ${log.session_title || log.session_id}\nID: ${log.session_id}\n点击筛选该会话`}
                               className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 transition-colors max-w-[200px] truncate block cursor-pointer"
@@ -666,6 +692,22 @@ const Logs: React.FC = () => {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* ── Pagination Bar ── */}
+        <div className="shrink-0 border-t border-white/8 bg-white/[0.01]">
+          <Pagination
+            currentPage={currentPage}
+            totalPages={Math.max(1, Math.ceil(totalCount / pageSize))}
+            onPageChange={(page) => setCurrentPage(page)}
+            totalItems={totalCount}
+            itemsPerPage={pageSize}
+            onPageSizeChange={(newSize) => {
+              setPageSize(newSize);
+              setCurrentPage(1);
+            }}
+            pageSizeOptions={[10, 20, 50, 100]}
+          />
         </div>
       </div>
 

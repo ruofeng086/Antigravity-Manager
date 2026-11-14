@@ -3158,28 +3158,56 @@ pub fn get_logs_count() -> Result<u64, String> {
 }
 
 /// Get count of logs matching search filter
-/// filter: search text to match in url, method, model, or status
+/// filter: search text to match in url, method, model, mapped_model, upstream_model, status, session_title, etc.
 /// errors_only: if true, only count logs with status < 200 or >= 400
 pub fn get_logs_count_filtered(filter: &str, errors_only: bool) -> Result<u64, String> {
+    get_logs_count_filtered_with_status(filter, if errors_only { "error" } else { "all" }, "all")
+}
+
+pub fn get_logs_count_filtered_with_status(
+    filter: &str,
+    status: &str,
+    model_family: &str,
+) -> Result<u64, String> {
     let conn = connect_db()?;
+    let trimmed_filter = filter.trim();
+    let filter_pattern = format!("%{}%", trimmed_filter);
+    let has_filter = !trimmed_filter.is_empty();
 
-    let filter_pattern = format!("%{}%", filter);
+    let mut conditions = Vec::new();
+    match status.trim().to_lowercase().as_str() {
+        "success" | "ok" | "2xx" => conditions.push("(status >= 200 AND status < 400)"),
+        "error" | "errors" | "true" | "4xx" | "5xx" => conditions.push("(status < 200 OR status >= 400)"),
+        _ => {}
+    }
 
-    let sql = if errors_only {
-        "SELECT COUNT(*) FROM request_logs WHERE (status < 200 OR status >= 400)"
-    } else if filter.is_empty() {
-        "SELECT COUNT(*) FROM request_logs"
+    match model_family.trim().to_lowercase().as_str() {
+        "gemini" => conditions.push("(model LIKE '%gemini%' OR mapped_model LIKE '%gemini%' OR upstream_model LIKE '%gemini%')"),
+        "claude" => conditions.push("(model LIKE '%claude%' OR mapped_model LIKE '%claude%' OR upstream_model LIKE '%claude%')"),
+        "gpt" | "openai" => conditions.push("(model LIKE '%gpt%' OR model LIKE '%openai%' OR mapped_model LIKE '%gpt%' OR mapped_model LIKE '%openai%' OR upstream_model LIKE '%gpt%' OR upstream_model LIKE '%openai%')"),
+        _ => {}
+    }
+
+    if has_filter {
+        conditions.push("(url LIKE :filter_pat OR method LIKE :filter_pat OR model LIKE :filter_pat OR mapped_model LIKE :filter_pat OR upstream_model LIKE :filter_pat OR CAST(status AS TEXT) LIKE :filter_pat OR account_email LIKE :filter_pat OR client_ip LIKE :filter_pat OR session_id LIKE :filter_pat OR session_title LIKE :filter_pat OR id LIKE :filter_pat)");
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
     } else {
-        "SELECT COUNT(*) FROM request_logs WHERE
-            (url LIKE ?1 OR method LIKE ?1 OR model LIKE ?1 OR CAST(status AS TEXT) LIKE ?1 OR account_email LIKE ?1)"
+        format!("WHERE {}", conditions.join(" AND "))
     };
 
-    let count: u64 = if filter.is_empty() && !errors_only {
-        conn.query_row(sql, [], |row| row.get(0))
-    } else if errors_only {
-        conn.query_row(sql, [], |row| row.get(0))
+    let sql = format!("SELECT COUNT(*) FROM request_logs {}", where_clause);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    let count: u64 = if has_filter {
+        stmt.query_row(
+            rusqlite::named_params! { ":filter_pat": &filter_pattern },
+            |row| row.get(0),
+        )
     } else {
-        conn.query_row(sql, [&filter_pattern], |row| row.get(0))
+        stmt.query_row([], |row| row.get(0))
     }
     .map_err(|e| e.to_string())?;
 
@@ -3187,7 +3215,7 @@ pub fn get_logs_count_filtered(filter: &str, errors_only: bool) -> Result<u64, S
 }
 
 /// Get logs with search filter and pagination
-/// filter: search text to match in url, method, model, or status
+/// filter: search text to match in url, method, model, mapped_model, upstream_model, status, session_title, etc.
 /// errors_only: if true, only return logs with status < 200 or >= 400
 pub fn get_logs_filtered(
     filter: &str,
@@ -3195,58 +3223,79 @@ pub fn get_logs_filtered(
     limit: usize,
     offset: usize,
 ) -> Result<Vec<ProxyRequestLog>, String> {
+    get_logs_filtered_with_status(filter, if errors_only { "error" } else { "all" }, "all", limit, offset)
+}
+
+pub fn get_logs_filtered_with_status(
+    filter: &str,
+    status: &str,
+    model_family: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<ProxyRequestLog>, String> {
     let conn = connect_db()?;
+    let trimmed_filter = filter.trim();
+    let filter_pattern = format!("%{}%", trimmed_filter);
+    let has_filter = !trimmed_filter.is_empty();
 
-    let filter_pattern = format!("%{}%", filter);
+    let mut conditions = Vec::new();
+    match status.trim().to_lowercase().as_str() {
+        "success" | "ok" | "2xx" => conditions.push("(status >= 200 AND status < 400)"),
+        "error" | "errors" | "true" | "4xx" | "5xx" => conditions.push("(status < 200 OR status >= 400)"),
+        _ => {}
+    }
 
-    let sql = if errors_only {
-        "SELECT id, timestamp, method, url, status, duration, model, substr(error, 1, 1024),
-                NULL as request_body, NULL as upstream_request_body, NULL as response_body,
-                input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
-                NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model, session_title
-         FROM request_logs
-         WHERE (status < 200 OR status >= 400)
-         ORDER BY timestamp DESC
-         LIMIT ?1 OFFSET ?2"
-    } else if filter.is_empty() {
-        "SELECT id, timestamp, method, url, status, duration, model, substr(error, 1, 1024),
-                NULL as request_body, NULL as upstream_request_body, NULL as response_body,
-                input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
-                NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model, session_title
-         FROM request_logs
-         ORDER BY timestamp DESC
-         LIMIT ?1 OFFSET ?2"
+    match model_family.trim().to_lowercase().as_str() {
+        "gemini" => conditions.push("(model LIKE '%gemini%' OR mapped_model LIKE '%gemini%' OR upstream_model LIKE '%gemini%')"),
+        "claude" => conditions.push("(model LIKE '%claude%' OR mapped_model LIKE '%claude%' OR upstream_model LIKE '%claude%')"),
+        "gpt" | "openai" => conditions.push("(model LIKE '%gpt%' OR model LIKE '%openai%' OR mapped_model LIKE '%gpt%' OR mapped_model LIKE '%openai%' OR upstream_model LIKE '%gpt%' OR upstream_model LIKE '%openai%')"),
+        _ => {}
+    }
+
+    if has_filter {
+        conditions.push("(url LIKE :filter_pat OR method LIKE :filter_pat OR model LIKE :filter_pat OR mapped_model LIKE :filter_pat OR upstream_model LIKE :filter_pat OR CAST(status AS TEXT) LIKE :filter_pat OR account_email LIKE :filter_pat OR client_ip LIKE :filter_pat OR session_id LIKE :filter_pat OR session_title LIKE :filter_pat OR id LIKE :filter_pat)");
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
     } else {
-        "SELECT id, timestamp, method, url, status, duration, model, substr(error, 1, 1024),
-                NULL as request_body, NULL as upstream_request_body, NULL as response_body,
-                input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
-                NULL as request_headers, NULL as upstream_request_headers, response_headers,
-                session_id, upstream_model, session_title
-         FROM request_logs
-         WHERE (url LIKE ?3 OR method LIKE ?3 OR model LIKE ?3 OR CAST(status AS TEXT) LIKE ?3 OR account_email LIKE ?3 OR client_ip LIKE ?3 OR session_id LIKE ?3 OR session_title LIKE ?3)
-         ORDER BY timestamp DESC
-         LIMIT ?1 OFFSET ?2"
+        format!("WHERE {}", conditions.join(" AND "))
     };
 
-    let logs: Vec<ProxyRequestLog> = if filter.is_empty() && !errors_only {
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT id, timestamp, method, url, status, duration, model, substr(error, 1, 1024),
+                NULL as request_body, NULL as upstream_request_body, NULL as response_body,
+                input_tokens, output_tokens, cached_tokens, reasoning_tokens, account_email, mapped_model, protocol, client_ip, username,
+                NULL as request_headers, NULL as upstream_request_headers, response_headers,
+                session_id, upstream_model, session_title
+         FROM request_logs
+         {}
+         ORDER BY timestamp DESC
+         LIMIT :limit OFFSET :offset",
+        where_clause
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    let logs: Vec<ProxyRequestLog> = if has_filter {
         let logs_iter = stmt
-            .query_map([limit, offset], map_request_log_row)
-            .map_err(|e| e.to_string())?;
-        logs_iter.filter_map(|r| r.ok()).collect()
-    } else if errors_only {
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-        let logs_iter = stmt
-            .query_map([limit, offset], map_request_log_row)
+            .query_map(
+                rusqlite::named_params! {
+                    ":limit": limit as i64,
+                    ":offset": offset as i64,
+                    ":filter_pat": &filter_pattern,
+                },
+                map_request_log_row,
+            )
             .map_err(|e| e.to_string())?;
         logs_iter.filter_map(|r| r.ok()).collect()
     } else {
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let logs_iter = stmt
             .query_map(
-                rusqlite::params![limit, offset, filter_pattern],
+                rusqlite::named_params! {
+                    ":limit": limit as i64,
+                    ":offset": offset as i64,
+                },
                 map_request_log_row,
             )
             .map_err(|e| e.to_string())?;

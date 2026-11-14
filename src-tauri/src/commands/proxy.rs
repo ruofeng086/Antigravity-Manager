@@ -608,11 +608,20 @@ pub async fn export_proxy_logs_json(file_path: String, json_data: String) -> Res
 pub async fn get_proxy_logs_count_filtered(
     filter: Option<String>,
     errors_only: Option<bool>,
+    status: Option<String>,
+    model_family: Option<String>,
 ) -> Result<u64, String> {
     let _ = crate::modules::antigravity_sync::sync_desktop_records(100);
     let filter = filter.unwrap_or_default();
-    let errors_only = errors_only.unwrap_or(false);
-    crate::modules::proxy_db::get_logs_count_filtered(&filter, errors_only)
+    let status_str = status.unwrap_or_else(|| {
+        if errors_only.unwrap_or(false) {
+            "error".to_string()
+        } else {
+            "all".to_string()
+        }
+    });
+    let model_fam = model_family.unwrap_or_else(|| "all".to_string());
+    crate::modules::proxy_db::get_logs_count_filtered_with_status(&filter, &status_str, &model_fam)
 }
 
 /// 获取带搜索条件的分页日志
@@ -620,15 +629,24 @@ pub async fn get_proxy_logs_count_filtered(
 pub async fn get_proxy_logs_filtered(
     filter: Option<String>,
     errors_only: Option<bool>,
+    status: Option<String>,
+    model_family: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Vec<crate::proxy::monitor::ProxyRequestLog>, String> {
     let _ = crate::modules::antigravity_sync::sync_desktop_records(100);
     let filter = filter.unwrap_or_default();
-    let errors_only = errors_only.unwrap_or(false);
-    let limit = limit.unwrap_or(100);
+    let status_str = status.unwrap_or_else(|| {
+        if errors_only.unwrap_or(false) {
+            "error".to_string()
+        } else {
+            "all".to_string()
+        }
+    });
+    let model_fam = model_family.unwrap_or_else(|| "all".to_string());
+    let limit = limit.unwrap_or(20);
     let offset = offset.unwrap_or(0);
-    crate::modules::proxy_db::get_logs_filtered(&filter, errors_only, limit, offset)
+    crate::modules::proxy_db::get_logs_filtered_with_status(&filter, &status_str, &model_fam, limit, offset)
 }
 
 /// 生成 API Key
