@@ -101,10 +101,12 @@ jobs:
           if ($nsisExes.Count -eq 0) {
             $nsisExes = Get-ChildItem -Path "src-tauri/target/*/release/bundle/nsis/*.exe"
           }
+          $version = "${{ steps.version_info.outputs.version }}"
           Write-Host "Found NSIS Installers:"
           foreach ($f in $nsisExes) {
             Write-Host " - $($f.FullName)"
-            Copy-Item -Path $f.FullName -Destination "dist-artifacts/Antigravity-Manager-Setup.exe"
+            $targetName = "Antigravity-Manager-$version-Setup.exe"
+            Copy-Item -Path $f.FullName -Destination "dist-artifacts/$targetName"
           }
           $files = Get-ChildItem -Path "dist-artifacts"
           Write-Host "Staged dist-artifacts:"
@@ -142,7 +144,7 @@ jobs:
             - 🛡️ **开箱即用**：开机自启、本地轻量代理、自动故障重试与健康检查。
             
             ### 安装包下载：
-            直接在下方 Assets 下载 `Antigravity-Manager-Setup.exe` 即可一键安装使用！
+            直接在下方 Assets 下载 `Antigravity-Manager-${{ steps.version_info.outputs.version }}-Setup.exe` 即可一键安装使用！
           token: ${{ secrets.GITHUB_TOKEN }}
           artifacts: "dist-artifacts/*"
           artifactErrorsFailBuild: false
