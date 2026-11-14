@@ -1,3 +1,11 @@
+#![allow(
+    dead_code,
+    unused_variables,
+    unused_imports,
+    unused_mut,
+    unused_assignments
+)]
+
 mod commands;
 pub mod constants;
 pub mod error;
