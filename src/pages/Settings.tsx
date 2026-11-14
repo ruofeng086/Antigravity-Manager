@@ -1,0 +1,1602 @@
+import { useState, useEffect, startTransition } from 'react';
+import { Save, Github, ExternalLink, RefreshCw, LayoutDashboard, Users, Activity, BarChart3, Settings as SettingsIcon, CheckCircle2, Copy, Check } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { isTauri } from '../utils/env';
+import { request as invoke } from '../utils/request';
+import { open } from '@tauri-apps/plugin-dialog';
+import { useConfigStore } from '../stores/useConfigStore';
+import { AppConfig, HubFingerprint } from '../types/config';
+import ModalDialog from '../components/common/ModalDialog';
+import HelpTooltip from '../components/common/HelpTooltip';
+import { showToast } from '../components/common/ToastContainer';
+import { copyToClipboard } from '../utils/clipboard';
+import { cn } from '../utils/cn';
+import QuotaProtection from '../components/settings/QuotaProtection';
+import SmartWarmup from '../components/settings/SmartWarmup';
+import ClassicAutoSwitch from '../components/settings/ClassicAutoSwitch';
+import { motion } from 'framer-motion';
+import { ZOOM_LEVELS, getStoredZoom, applyZoom } from '../utils/zoom';
+
+function normalizeDataDirDisplay(path: string): string {
+    const trimmed = path.trim();
+    if (trimmed.startsWith('\\\\?\\UNC\\')) {
+        return `\\\\${trimmed.slice('\\\\?\\UNC\\'.length)}`;
+    }
+    if (trimmed.startsWith('\\\\?\\')) {
+        return trimmed.slice('\\\\?\\'.length);
+    }
+    if (trimmed.startsWith('//?/UNC/')) {
+        return `//${trimmed.slice('//?/UNC/'.length)}`;
+    }
+    if (trimmed.startsWith('//?/')) {
+        return trimmed.slice('//?/'.length);
+    }
+    return trimmed;
+}
+
+function Settings() {
+    const { t } = useTranslation();
+    const { config, loadConfig, saveConfig, updateLanguage, updateTheme } = useConfigStore();
+    const [activeTab, setActiveTab] = useState<'general' | 'account' | 'advanced' | 'about'>('general');
+    const [appVersion, setAppVersion] = useState<string>('1.0.0');
+    const [formData, setFormData] = useState<AppConfig>({
+        language: 'zh',
+        theme: 'system',
+        auto_refresh: false,
+        refresh_interval: 10,
+        auto_sync: false,
+        sync_interval: 5,
+        auto_switch_classic_depleted: false,
+        classic_auto_switch: {
+            enabled: false,
+            threshold_percentage: 0,
+            monitored_models: ['gemini', 'claude']
+        },
+        proxy: {
+            enabled: false,
+            port: 8080,
+            api_key: '',
+            auto_start: false,
+            request_timeout: 120,
+            enable_logging: false,
+            upstream_proxy: {
+                enabled: false,
+                url: ''
+            },
+            debug_logging: {
+                enabled: false,
+                output_dir: undefined
+            } as { enabled: boolean; output_dir?: string },
+            proxy_pool: {
+                enabled: false,
+                proxies: [],
+                health_check_interval: 300,
+                auto_failover: true,
+                strategy: 'priority',
+                account_bindings: {}
+            }
+        },
+        scheduled_warmup: {
+            enabled: false,
+            monitored_models: []
+        },
+        quota_protection: {
+            enabled: false,
+            threshold_percentage: 10,
+            monitored_models: []
+        },
+        pinned_quota_models: {
+            models: ['gemini-3.1-pro-high', 'gemini-3.8-flash-high', 'gemini-3.1-flash-image', 'claude-opus-4-6-thinking']
+        },
+        cloudflared: {
+            enabled: false,
+            mode: 'quick',
+            port: 7860,
+            use_http2: true
+        },
+        circuit_breaker: {
+            enabled: true,
+            backoff_steps: [60, 300, 1800, 7200]
+        },
+        hidden_menu_items: [],  // 菜单显示设置：默认不隐藏任何菜单项
+
+    });
+
+    // Dialog state
+    const [dataDirPath, setDataDirPath] = useState<string>('~/.antigravity_tools/');
+    const [pendingDataDir, setPendingDataDir] = useState<string>('');
+    const [isMigrateDataDirOpen, setIsMigrateDataDirOpen] = useState(false);
+    const [isMigratingDataDir, setIsMigratingDataDir] = useState(false);
+
+    // Antigravity cache clearing state
+    const [isClearCacheOpen, setIsClearCacheOpen] = useState(false);
+    const [cachePaths, setCachePaths] = useState<string[]>([]);
+    const [isClearingCache, setIsClearingCache] = useState(false);
+
+    // UI Zoom state
+    const [uiZoom, setUiZoom] = useState<number>(() => getStoredZoom());
+
+    useEffect(() => {
+        const handleZoomChange = (e: Event) => {
+            const customEvent = e as CustomEvent<number>;
+            if (customEvent.detail) {
+                setUiZoom(customEvent.detail);
+            }
+        };
+        window.addEventListener('app-ui-zoom-change', handleZoomChange);
+        return () => {
+            window.removeEventListener('app-ui-zoom-change', handleZoomChange);
+        };
+    }, []);
+
+    // Official Hub fingerprint state
+    const [hubFingerprint, setHubFingerprint] = useState<HubFingerprint | null>(null);
+    const [detectingHub, setDetectingHub] = useState(false);
+    const [copiedHubUa, setCopiedHubUa] = useState(false);
+
+    useEffect(() => {
+        loadConfig();
+
+        // 获取当前 Hub 客户端指纹
+        invoke<HubFingerprint>('get_hub_fingerprint')
+            .then(fp => setHubFingerprint(fp))
+            .catch(err => console.error('Failed to get hub fingerprint:', err));
+
+        // 获取真实数据目录路径
+        invoke<string>('get_data_dir_path')
+            .then(path => setDataDirPath(normalizeDataDirDisplay(path)))
+            .catch(err => console.error('Failed to get data dir:', err));
+
+        // 加载更新设置
+        invoke<{ auto_check: boolean; last_check_time: number; check_interval_hours: number; update_channel?: 'stable' | 'beta' }>('get_update_settings')
+            .then(settings => {
+                setFormData(prev => ({
+                    ...prev,
+                    auto_check_update: settings.auto_check,
+                    update_check_interval: settings.check_interval_hours,
+                    update_channel: settings.update_channel || (appVersion.includes('-') ? 'beta' : 'stable'),
+                }));
+            })
+            .catch(err => console.error('Failed to load update settings:', err));
+
+        // 获取真实的开机自启状态
+        invoke<boolean>('is_auto_launch_enabled')
+            .then(enabled => {
+                setFormData(prev => ({ ...prev, auto_launch: enabled }));
+            })
+            .catch(err => console.error('Failed to get auto launch status:', err));
+
+        // 获取应用真实版本号
+        if (isTauri()) {
+            import('@tauri-apps/api/app').then(({ getVersion }) => {
+                getVersion().then(v => setAppVersion(v)).catch(() => {});
+            });
+        }
+    }, [loadConfig]);
+
+    useEffect(() => {
+        if (config) {
+            setFormData(config);
+        }
+    }, [config]);
+
+    // 删除自动启用调试控制台的逻辑 - 改为用户手动控制
+
+    const handleSave = async () => {
+        try {
+            // 校验：如果启用了上游代理但没有填写地址，给出提示
+            const proxyEnabled = formData.proxy?.upstream_proxy?.enabled;
+            const proxyUrl = formData.proxy?.upstream_proxy?.url?.trim();
+            if (proxyEnabled && !proxyUrl) {
+                showToast(t('proxy.config.upstream_proxy.validation_error'), 'error');
+                return;
+            }
+
+            await saveConfig(formData);
+            showToast(t('common.saved'), 'success');
+
+            // 刷新当前 Hub 指纹状态
+            invoke<HubFingerprint>('get_hub_fingerprint')
+                .then(fp => setHubFingerprint(fp))
+                .catch(() => {});
+
+            // 如果修改了代理配置，提示用户需要重启
+            if (proxyEnabled && proxyUrl) {
+                showToast(t('proxy.config.upstream_proxy.restart_hint'), 'info');
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleDetectHubFingerprint = async () => {
+        setDetectingHub(true);
+        try {
+            const fp = await invoke<HubFingerprint>('detect_remote_hub_fingerprint', {
+                customVersion: formData.proxy?.hub_version || null,
+                customCl: formData.proxy?.hub_cl || null,
+            });
+            setHubFingerprint(fp);
+            showToast(
+                t('proxy.config.hub.detect_success', {
+                    version: fp.version,
+                    cl: fp.cl,
+                    defaultValue: `已成功探测并同步官方最新 Hub: v${fp.version} (CL: ${fp.cl})`
+                }),
+                'success'
+            );
+        } catch (err) {
+            console.error('探测 Hub 失败:', err);
+            showToast(
+                t('proxy.config.hub.detect_failed', {
+                    error: String(err),
+                    defaultValue: `探测失败: ${err}`
+                }),
+                'error'
+            );
+        } finally {
+            setDetectingHub(false);
+        }
+    };
+
+
+
+    const handleOpenDataDir = async () => {
+        try {
+            await invoke('open_data_folder');
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleSelectDataDir = async () => {
+        try {
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                title: t('settings.advanced.data_dir_select'),
+            });
+            if (!selected || typeof selected !== 'string') {
+                return;
+            }
+            if (selected === dataDirPath) {
+                return;
+            }
+            setPendingDataDir(selected);
+            setIsMigrateDataDirOpen(true);
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const confirmMigrateDataDir = async () => {
+        if (!pendingDataDir || isMigratingDataDir) {
+            return;
+        }
+        setIsMigratingDataDir(true);
+        try {
+            const newPath = await invoke<string>('set_data_dir', { path: pendingDataDir });
+            setDataDirPath(normalizeDataDirDisplay(newPath));
+            setIsMigrateDataDirOpen(false);
+            setPendingDataDir('');
+            showToast(t('settings.advanced.data_dir_migrated'), 'success');
+            showToast(t('settings.advanced.data_dir_restart_hint'), 'info');
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        } finally {
+            setIsMigratingDataDir(false);
+        }
+    };
+
+    const handleSelectExportPath = async () => {
+        try {
+            // @ts-ignore
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                title: t('settings.advanced.export_path'),
+            });
+            if (selected && typeof selected === 'string') {
+                setFormData({ ...formData, default_export_path: selected });
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleSelectAntigravityPath = async () => {
+        try {
+            const selected = await open({
+                directory: false,
+                multiple: false,
+                title: t('settings.advanced.antigravity_path_select'),
+            });
+            if (selected && typeof selected === 'string') {
+                setFormData({ ...formData, antigravity_executable: selected });
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleSelectAntigravityIdePath = async () => {
+        try {
+            const selected = await open({
+                directory: false,
+                multiple: false,
+                title: t('settings.advanced.antigravity_ide_path_select', 'Select Antigravity IDE Executable'),
+            });
+            if (selected && typeof selected === 'string') {
+                setFormData({ ...formData, antigravity_ide_executable: selected });
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleSelectDebugLogDir = async () => {
+        try {
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                title: t('settings.advanced.debug_log_dir_select'),
+            });
+            if (selected && typeof selected === 'string') {
+                setFormData({
+                    ...formData,
+                    proxy: {
+                        ...formData.proxy,
+                        debug_logging: {
+                            enabled: formData.proxy?.debug_logging?.enabled ?? false,
+                            output_dir: selected,
+                        },
+                    },
+                });
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleDetectAntigravityPath = async () => {
+        try {
+            const command = isTauri() ? 'get_antigravity_path' : 'get_antigravity_path'; // 后端已统一
+            const path = await invoke<string>(command, { bypassConfig: true });
+            setFormData({ ...formData, antigravity_executable: path });
+            showToast(t('settings.advanced.antigravity_path_detected'), 'success');
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleSelectAntigravityCliPath = async () => {
+        try {
+            const selected = await open({
+                directory: false,
+                multiple: false,
+                title: t('settings.advanced.antigravity_cli_path_select', 'Select Antigravity CLI (agy) Executable'),
+            });
+            if (selected && typeof selected === 'string') {
+                setFormData({ ...formData, antigravity_cli_executable: selected });
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    const handleDetectAntigravityCliPath = async () => {
+        try {
+            const path = await invoke<string>('get_antigravity_cli_path', { bypassConfig: true });
+            setFormData({ ...formData, antigravity_cli_executable: path });
+            showToast(t('settings.advanced.antigravity_cli_path_detected', 'Detected CLI path updated'), 'success');
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        }
+    };
+
+    // Handle opening cache clear dialog
+    const handleOpenClearCacheDialog = async () => {
+        try {
+            const paths = await invoke<string[]>('get_antigravity_cache_paths');
+            setCachePaths(paths);
+            setIsClearCacheOpen(true);
+        } catch (error) {
+            // If no cache paths found, still allow opening the dialog
+            setCachePaths([]);
+            setIsClearCacheOpen(true);
+        }
+    };
+
+    // Handle clearing Antigravity cache
+    const confirmClearAntigravityCache = async () => {
+        setIsClearingCache(true);
+        try {
+            const result = await invoke<{
+                cleared_paths: string[];
+                total_size_freed: number;
+                errors: string[];
+            }>('clear_antigravity_cache');
+
+            const sizeMB = (result.total_size_freed / 1024 / 1024).toFixed(2);
+
+            if (result.cleared_paths.length > 0) {
+                showToast(t('settings.advanced.cache_cleared_success', { size: sizeMB }), 'success');
+            } else if (result.errors.length > 0) {
+                showToast(`${t('common.error')}: ${result.errors[0]}`, 'error');
+            } else {
+                showToast(t('settings.advanced.cache_not_found'), 'info');
+            }
+        } catch (error) {
+            showToast(`${t('common.error')}: ${error}`, 'error');
+        } finally {
+            setIsClearingCache(false);
+            setIsClearCacheOpen(false);
+        }
+    };
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="h-full w-full overflow-y-auto"
+        >
+            <div className="p-5 space-y-4 max-w-7xl mx-auto">
+                {/* 顶部工具栏：Tab 导航和保存按钮 */}
+                <div className="flex justify-between items-center">
+                    {/* Tab 导航 - 采用顶部导航栏样式：外层灰色容器 */}
+                    <div className="flex items-center gap-1 bg-gray-100 dark:bg-base-200 rounded-full p-1 w-fit">
+                        <button
+                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'general'
+                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                                }`}
+                            onClick={() => startTransition(() => setActiveTab('general'))}
+                        >
+                            {t('settings.tabs.general')}
+                        </button>
+                        <button
+                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'account'
+                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                                }`}
+                            onClick={() => startTransition(() => setActiveTab('account'))}
+                        >
+                            {t('settings.tabs.account')}
+                        </button>
+                        <button
+                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'advanced'
+                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                                }`}
+                            onClick={() => startTransition(() => setActiveTab('advanced'))}
+                        >
+                            {t('settings.tabs.advanced')}
+                        </button>
+                        <button
+                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activeTab === 'about'
+                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
+                                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+                                }`}
+                            onClick={() => startTransition(() => setActiveTab('about'))}
+                        >
+                            {t('settings.tabs.about')}
+                        </button>
+                    </div>
+
+                    <button
+                        className="px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 shadow-sm"
+                        onClick={handleSave}
+                    >
+                        <Save className="w-4 h-4" />
+                        {t('settings.save')}
+                    </button>
+                </div>
+
+                {/* 设置表单 */}
+                <div className="bg-white dark:bg-base-100 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-base-200">
+                    {/* 通用设置 */}
+                    {activeTab === 'general' && (
+                        <div className="space-y-6">
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-base-content">{t('settings.general.title')}</h2>
+
+                            {/* 语言选择 */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-2">{t('settings.general.language')}</label>
+                                <select
+                                    className="w-full px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-base-content bg-gray-50 dark:bg-base-200"
+                                    value={formData.language}
+                                    onChange={(e) => {
+                                        const newLang = e.target.value;
+                                        setFormData({ ...formData, language: newLang });
+                                        updateLanguage(newLang);
+                                    }}
+                                >
+                                    <option value="zh">简体中文</option>
+                                    <option value="zh-TW">繁體中文</option>
+                                    <option value="en">English</option>
+                                    <option value="ja">日本語</option>
+                                    <option value="tr">Türkçe</option>
+                                    <option value="vi">Tiếng Việt</option>
+                                    <option value="pt">Português</option>
+                                    <option value="ko">한국어</option>
+                                    <option value="ru">Русский</option>
+                                    <option value="ar">العربية</option>
+                                    <option value="es">Español</option>
+                                    <option value="my">Bahasa Melayu</option>
+                                </select>
+                            </div>
+
+                            {/* 主题选择 */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-2">{t('settings.general.theme')}</label>
+                                <select
+                                    className="w-full px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-base-content bg-gray-50 dark:bg-base-200"
+                                    value={formData.theme}
+                                    onChange={(e) => {
+                                        const newTheme = e.target.value;
+                                        setFormData({ ...formData, theme: newTheme });
+                                        updateTheme(newTheme);
+                                    }}
+                                >
+                                    <option value="light">{t('settings.general.theme_light')}</option>
+                                    <option value="dark">{t('settings.general.theme_dark')}</option>
+                                    <option value="system">{t('settings.general.theme_system')}</option>
+                                </select>
+                            </div>
+
+                            {/* 界面与字体缩放 */}
+                            <div>
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content">
+                                        {t('settings.general.ui_zoom', '界面与字体缩放')}
+                                    </label>
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                        Cmd / Ctrl + / - / 0
+                                    </span>
+                                </div>
+                                <select
+                                    className="w-full px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-base-content bg-gray-50 dark:bg-base-200"
+                                    value={uiZoom}
+                                    onChange={(e) => {
+                                        // applyZoom dispatches 'app-ui-zoom-change', which syncs uiZoom
+                                        applyZoom(Number(e.target.value));
+                                    }}
+                                >
+                                    {ZOOM_LEVELS.map((level) => (
+                                        <option key={level} value={level}>
+                                            {level}%{level === 100 ? ` (${t('settings.general.ui_zoom_default', '默认')})` : ''}{level === 120 ? ` (${t('settings.general.ui_zoom_recommended', '推荐大屏')})` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                    {t('settings.general.ui_zoom_desc', '调整软件整体界面和字体大小，支持随时使用快捷键 Cmd/Ctrl + / - / 0 快速缩放')}
+                                </p>
+                            </div>
+
+                            {/* 开机自动启动 */}
+                            <div>
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content">{t('settings.general.auto_launch')}</label>
+                                    {!isTauri() && (
+                                        <span className="text-xs text-orange-500 dark:text-orange-400">
+                                            {t('settings.web_mode_limitation', '(Web 模式不支持)')}
+                                        </span>
+                                    )}
+                                </div>
+                                <select
+                                    className="w-full px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-base-content bg-gray-50 dark:bg-base-200"
+                                    value={formData.auto_launch ? 'enabled' : 'disabled'}
+                                    onChange={async (e) => {
+                                        const enabled = e.target.value === 'enabled';
+                                        try {
+                                            await invoke('toggle_auto_launch', { enable: enabled });
+                                            setFormData({ ...formData, auto_launch: enabled });
+                                            showToast(enabled ? t('settings.general.auto_launch_enabled') : t('settings.general.auto_launch_disabled'), 'success');
+                                        } catch (error) {
+                                            showToast(`${t('common.error')}: ${error}`, 'error');
+                                        }
+                                    }}
+                                >
+                                    <option value="disabled">{t('settings.general.auto_launch_disabled')}</option>
+                                    <option value="enabled" disabled={!isTauri()}>{t('settings.general.auto_launch_enabled')}</option>
+
+                                </select>
+                                <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{t('settings.general.auto_launch_desc')}</p>
+                            </div>
+
+                            {isTauri() && (
+                                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-base-200 rounded-lg border border-gray-100 dark:border-base-300">
+                                    <div>
+                                        <div className="font-medium text-gray-900 dark:text-base-content">{t('settings.general.quiet_autostart')}</div>
+                                        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{t('settings.general.quiet_autostart_desc')}</p>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={formData.quiet_autostart !== false}
+                                            onChange={async (e) => {
+                                                const enabled = e.target.checked;
+                                                const next = { ...formData, quiet_autostart: enabled };
+                                                setFormData(next);
+                                                if (!config) {
+                                                    return;
+                                                }
+                                                try {
+                                                    await saveConfig(next);
+                                                    showToast(enabled ? t('settings.general.quiet_autostart_enabled') : t('settings.general.quiet_autostart_disabled'), 'success');
+                                                } catch (error) {
+                                                    showToast(`${t('common.error')}: ${error}`, 'error');
+                                                }
+                                            }}
+                                        />
+                                        <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                                    </label>
+                                </div>
+                            )}
+
+                            {/* 自动检查更新 */}
+                            <>
+                                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-base-200 rounded-lg border border-gray-100 dark:border-base-300">
+                                    <div>
+                                        <div className="font-medium text-gray-900 dark:text-base-content">{t('settings.general.auto_check_update')}</div>
+                                        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{t('settings.general.auto_check_update_desc')}</p>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={formData.auto_check_update ?? true}
+                                            onChange={async (e) => {
+                                                const enabled = e.target.checked;
+                                                try {
+                                                    await invoke('save_update_settings', {
+                                                        settings: {
+                                                            auto_check: enabled,
+                                                            check_interval_hours: formData.update_check_interval ?? 24
+                                                        }
+                                                    });
+                                                    setFormData({ ...formData, auto_check_update: enabled });
+                                                    showToast(enabled ? t('settings.general.auto_check_update_enabled') : t('settings.general.auto_check_update_disabled'), 'success');
+                                                } catch (error) {
+                                                    showToast(`${t('common.error')}: ${error}`, 'error');
+                                                }
+                                            }}
+                                        />
+                                        <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                                    </label>
+                                </div>
+
+                                {/* 检查间隔 */}
+                                {formData.auto_check_update && (
+                                    <div className="ml-4">
+                                        <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-2">{t('settings.general.update_check_interval')}</label>
+                                        <input
+                                            type="number"
+                                            className="w-32 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-base-content bg-gray-50 dark:bg-base-200"
+                                            min="1"
+                                            max="168"
+                                            value={formData.update_check_interval ?? 24}
+                                            onChange={(e) => setFormData({ ...formData, update_check_interval: parseInt(e.target.value) })}
+                                            onBlur={async () => {
+                                                try {
+                                                    await invoke('save_update_settings', {
+                                                        settings: {
+                                                            auto_check: formData.auto_check_update ?? true,
+                                                            check_interval_hours: formData.update_check_interval ?? 24
+                                                        }
+                                                    });
+                                                    showToast(t('settings.general.update_check_interval_saved'), 'success');
+                                                } catch (error) {
+                                                    showToast(`${t('common.error')}: ${error}`, 'error');
+                                                }
+                                            }}
+                                        />
+                                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{t('settings.general.update_check_interval_desc')}</p>
+                                    </div>
+                                )}
+                            </>
+
+                            {/* 轻量模式 (释放内存) */}
+                            {isTauri() && (
+                                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-base-200 rounded-lg border border-gray-100 dark:border-base-300">
+                                    <div>
+                                        <div className="font-medium text-gray-900 dark:text-base-content">{t('settings.general.lightweight_mode')}</div>
+                                        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{t('settings.general.lightweight_mode_desc')}</p>
+                                    </div>
+                                    <label className="relative inline-flex items-center cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={formData.lightweight_mode ?? false}
+                                            onChange={(e) => {
+                                                const enabled = e.target.checked;
+                                                setFormData({ ...formData, lightweight_mode: enabled });
+                                            }}
+                                        />
+                                        <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                                    </label>
+                                </div>
+                            )}
+
+                            {/* 托盘左键单击操作 */}
+                            {isTauri() && (
+                                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-base-200 rounded-lg border border-gray-100 dark:border-base-300">
+                                    <div className="pr-4">
+                                        <div className="font-medium text-gray-900 dark:text-base-content">
+                                            {t('settings.general.tray_click_action')}
+                                        </div>
+                                        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                                            {t('settings.general.tray_click_action_desc')}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center bg-gray-200/80 dark:bg-base-300 p-1 rounded-lg shrink-0">
+                                        <button
+                                            type="button"
+                                            onClick={() => setFormData({ ...formData, tray_click_action: 'mini' })}
+                                            className={cn(
+                                                "px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer select-none",
+                                                (formData.tray_click_action || 'mini') === 'mini'
+                                                    ? "bg-white dark:bg-base-100 text-blue-600 dark:text-blue-400 shadow-xs font-semibold"
+                                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                            )}
+                                        >
+                                            {t('settings.general.tray_click_action_mini_short', 'Mini 悬浮窗')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setFormData({ ...formData, tray_click_action: 'main' })}
+                                            className={cn(
+                                                "px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer select-none",
+                                                formData.tray_click_action === 'main'
+                                                    ? "bg-white dark:bg-base-100 text-blue-600 dark:text-blue-400 shadow-xs font-semibold"
+                                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                                            )}
+                                        >
+                                            {t('settings.general.tray_click_action_main_short', '主控制台')}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                                {/* 菜单显示设置 */}
+                                <div className="border-t border-gray-200 dark:border-base-200 pt-6 mt-6">
+                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.menu.title')}</h3>
+                                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                                        {t('settings.menu.desc')}
+                                    </p>
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                                        {[
+                                            { path: '/', label: t('nav.dashboard'), icon: LayoutDashboard },
+                                            { path: '/accounts', label: t('nav.accounts'), icon: Users },
+                                            { path: '/monitor', label: '监控', icon: Activity },
+                                            { path: '/statistics', label: '统计', icon: BarChart3 },
+                                            { path: '/settings', label: t('nav.settings'), icon: SettingsIcon },
+                                        ].map((item) => {
+                                            const hiddenItems = formData.hidden_menu_items || [];
+                                            const isVisible = !hiddenItems.includes(item.path);
+                                            const isSettings = item.path === '/settings';
+
+                                            return (
+                                                <div
+                                                    key={item.path}
+                                                    onClick={async () => {
+                                                        if (!isSettings) {
+                                                            const originalConfig = { ...formData };
+                                                            const hiddenItems = formData.hidden_menu_items || [];
+                                                            const newHiddenItems = isVisible
+                                                                ? [...hiddenItems, item.path]
+                                                                : hiddenItems.filter(p => p !== item.path);
+
+                                                            // 乐观更新 UI
+                                                            const newConfig = {
+                                                                ...formData,
+                                                                hidden_menu_items: newHiddenItems
+                                                            };
+                                                            setFormData(newConfig);
+
+                                                            // 尝试保存
+                                                            try {
+                                                                await saveConfig(newConfig);
+                                                            } catch (error) {
+                                                                // 保存失败，回滚到原始快照
+                                                                setFormData(originalConfig);
+                                                                showToast(`保存失败，已恢复设置: ${error}`, 'error');
+                                                            }
+                                                        }
+                                                    }}
+                                                    className={`
+                                                        relative flex flex-col items-center justify-center gap-3 p-4 rounded-xl border-2 transition-all cursor-pointer select-none
+                                                        ${isSettings
+                                                            ? 'bg-gray-50 dark:bg-base-200 border-gray-100 dark:border-base-300 opacity-60 cursor-not-allowed'
+                                                            : isVisible
+                                                                ? 'bg-blue-50/50 dark:bg-blue-900/10 border-blue-500 dark:border-blue-500 shadow-sm'
+                                                                : 'bg-white dark:bg-base-100 border-gray-200 dark:border-base-300 hover:border-gray-300 dark:hover:border-base-content/20 text-gray-500'
+                                                        }
+                                                    `}
+                                                >
+                                                    {/* 选中标记 */}
+                                                    {isVisible && (
+                                                        <div className="absolute top-2 right-2 text-blue-500">
+                                                            <CheckCircle2 size={16} fill="currentColor" className="text-white dark:text-base-100" />
+                                                        </div>
+                                                    )}
+
+                                                    {isSettings && (
+                                                        <div className="absolute top-2 right-2 text-xs font-bold text-gray-400 bg-gray-200 dark:bg-base-300 px-1.5 py-0.5 rounded">
+                                                            {t('settings.menu.required')}
+                                                        </div>
+                                                    )}
+
+                                                    <div className={`
+                                                        p-3 rounded-xl transition-colors
+                                                        ${isVisible
+                                                            ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                                                            : 'bg-gray-100 dark:bg-base-200 text-gray-400 dark:text-base-content/50'
+                                                        }
+                                                    `}>
+                                                        <item.icon size={24} />
+                                                    </div>
+
+                                                    <span className={`font-medium text-sm ${isVisible ? 'text-blue-900 dark:text-blue-100' : 'text-gray-500'}`}>
+                                                        {item.label}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-4 flex items-center gap-1.5">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-gray-400"></div>
+                                        {t('settings.menu.selected_items_note')}
+                                    </p>
+                                </div>
+                        </div>
+                    )}
+
+                    {/* 账号设置 */}
+                    {activeTab === 'account' && (
+                        <div className="space-y-4 animate-in fade-in duration-500">
+                            {/* 自动刷新配额 */}
+                            <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-blue-200 transition-all duration-300 shadow-sm">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center text-blue-500 group-hover:bg-blue-500 group-hover:text-white transition-all duration-300">
+                                            <RefreshCw size={20} />
+                                        </div>
+                                        <div>
+                                            <div className="font-bold text-gray-900 dark:text-gray-100">{t('settings.account.auto_refresh')}</div>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t('settings.account.auto_refresh_desc')}</p>
+                                        </div>
+                                    </div>
+                                    <label className={`relative inline-flex items-center ${formData.quota_protection.enabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={formData.auto_refresh}
+                                            disabled={formData.quota_protection.enabled}
+                                            onChange={async (e) => {
+                                                const enabled = e.target.checked;
+                                                const newConfig = { ...formData, auto_refresh: enabled };
+                                                setFormData(newConfig);
+                                                // Hot Save
+                                                try {
+                                                    await saveConfig(newConfig);
+                                                } catch (error) {
+                                                    showToast(`${t('common.error')}: ${error}`, 'error');
+                                                }
+                                            }}
+                                        />
+                                        <div className={`w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500 shadow-inner ${formData.quota_protection.enabled ? 'peer-checked:bg-blue-500' : ''}`}></div>
+                                    </label>
+                                </div>
+
+                                <div className="mt-5 pt-5 border-t border-gray-50 dark:border-base-300 flex items-center gap-4 animate-in slide-in-from-top-1 duration-200">
+                                    <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('settings.account.refresh_interval')}</label>
+                                    <div className="relative">
+                                        <input
+                                            type="number"
+                                            className="w-24 px-3 py-2 bg-gray-50 dark:bg-base-200 border border-gray-100 dark:border-base-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold text-blue-600 dark:text-blue-400"
+                                            min="1"
+                                            max="35791"
+                                            value={formData.refresh_interval}
+                                            onChange={(e) => setFormData({ ...formData, refresh_interval: isNaN(parseInt(e.target.value)) ? 1 : Math.min(Math.max(parseInt(e.target.value), 1), 35791) })}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+
+                            {/* 经典款自动热切 */}
+                            <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-violet-200 transition-all duration-300 shadow-sm">
+                                <ClassicAutoSwitch
+                                    config={formData.classic_auto_switch}
+                                    onChange={async (newConfig) => {
+                                        const newFormData = {
+                                            ...formData,
+                                            classic_auto_switch: newConfig
+                                        };
+                                        setFormData(newFormData);
+                                        try {
+                                            await saveConfig(newFormData);
+                                        } catch (error) {
+                                            showToast(`${t('common.error')}: ${error}`, 'error');
+                                        }
+                                    }}
+                                />
+                            </div>
+
+                            {/* 7天周配额智能预热 (Smart Warmup) */}
+                            <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-orange-200 transition-all duration-300 shadow-sm">
+                                <SmartWarmup
+                                    config={formData.scheduled_warmup}
+                                    onChange={async (newConfig) => {
+                                        const newFormData = {
+                                            ...formData,
+                                            scheduled_warmup: newConfig
+                                        };
+                                        setFormData(newFormData);
+                                        // Hot Save
+                                        try {
+                                            await saveConfig(newFormData);
+                                        } catch (error) {
+                                            showToast(`${t('common.error')}: ${error}`, 'error');
+                                        }
+                                    }}
+                                />
+                            </div>
+
+                            {/* 配额保护 (Quota Protection) */}
+                            <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-rose-200 transition-all duration-300 shadow-sm">
+                                <QuotaProtection
+                                    config={formData.quota_protection}
+                                    onChange={async (newConfig) => {
+                                        const updates: any = {
+                                            quota_protection: newConfig
+                                        };
+                                        // 联动逻辑：开启配额保护时，强制开启后台自动刷新 (不仅仅是预热)
+                                        if (newConfig.enabled) {
+                                            updates.auto_refresh = true;
+                                        }
+
+                                        const newFormData = {
+                                            ...formData,
+                                            ...updates
+                                        };
+                                        setFormData(newFormData);
+
+                                        // Hot Save
+                                        try {
+                                            await saveConfig(newFormData);
+                                        } catch (error) {
+                                            showToast(`${t('common.error')}: ${error}`, 'error');
+                                        }
+                                    }}
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 高级设置 */}
+                    {activeTab === 'advanced' && (
+                        <>
+                            <div className="space-y-4">
+                                {/* 默认导出路径 */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">{t('settings.advanced.export_path')}</label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                            value={formData.default_export_path || t('settings.advanced.export_path_placeholder')}
+                                            readOnly
+                                        />
+                                        {formData.default_export_path && (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
+                                                onClick={() => setFormData({ ...formData, default_export_path: undefined })}
+                                            >
+                                                {t('common.clear')}
+                                            </button>
+                                        )}
+                                        {isTauri() ? (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 hover:text-gray-900 dark:hover:text-base-content transition-colors"
+                                                onClick={handleSelectExportPath}
+                                            >
+                                                {t('settings.advanced.select_btn')}
+                                            </button>
+                                        ) : (
+                                            <span className="self-center text-xs text-gray-400 dark:text-gray-500 italic px-2">
+                                                {t('settings.web_mode_limitation', '(Web 模式不支持)')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{t('settings.advanced.default_export_path_desc')}</p>
+                                </div>
+
+                                {/* 数据目录 */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">{t('settings.advanced.data_dir')}</label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                            value={dataDirPath}
+                                            readOnly
+                                        />
+                                        {isTauri() ? (
+                                            <>
+                                                <button
+                                                    className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 hover:text-gray-900 dark:hover:text-base-content transition-colors"
+                                                    onClick={handleSelectDataDir}
+                                                    disabled={isMigratingDataDir}
+                                                >
+                                                    {t('settings.advanced.select_btn')}
+                                                </button>
+                                                <button
+                                                    className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 hover:text-gray-900 dark:hover:text-base-content transition-colors"
+                                                    onClick={handleOpenDataDir}
+                                                >
+                                                    {t('settings.advanced.open_btn')}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <span className="self-center text-xs text-gray-400 dark:text-gray-500 italic px-2">
+                                                {t('settings.web_mode_limitation', '(Web 模式不支持)')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{t('settings.advanced.data_dir_desc')}</p>
+                                </div>
+
+                                {/* 反重力程序路径 */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
+                                        {t('settings.advanced.antigravity_path')}
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                            value={formData.antigravity_executable || ''}
+                                            placeholder={t('settings.advanced.antigravity_path_placeholder')}
+                                            onChange={(e) => setFormData({ ...formData, antigravity_executable: e.target.value })}
+                                        />
+                                        {formData.antigravity_executable && (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
+                                                onClick={() => setFormData({ ...formData, antigravity_executable: undefined })}
+                                            >
+                                                {t('common.clear')}
+                                            </button>
+                                        )}
+                                        <button
+                                            className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                            onClick={handleDetectAntigravityPath}
+                                        >
+                                            {t('settings.advanced.detect_btn')}
+                                        </button>
+                                        {isTauri() ? (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                                onClick={handleSelectAntigravityPath}
+                                            >
+                                                {t('settings.advanced.select_btn')}
+                                            </button>
+                                        ) : (
+                                            <span className="self-center text-xs text-gray-400 dark:text-gray-500 italic px-2">
+                                                {t('settings.web_mode_limitation', '(Web 模式不支持)')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                                        {t('settings.advanced.antigravity_path_desc')}
+                                    </p>
+                                </div>
+
+                                {/* Antigravity CLI (agy) 程序路径 */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
+                                        {t('settings.advanced.antigravity_cli_path', 'Antigravity CLI (agy) Path')}
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                            value={formData.antigravity_cli_executable || ''}
+                                            placeholder={t('settings.advanced.antigravity_cli_path_placeholder', '未设置 (将使用自动探测)')}
+                                            onChange={(e) => setFormData({ ...formData, antigravity_cli_executable: e.target.value })}
+                                        />
+                                        {formData.antigravity_cli_executable && (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
+                                                onClick={() => setFormData({ ...formData, antigravity_cli_executable: undefined })}
+                                            >
+                                                {t('common.clear')}
+                                            </button>
+                                        )}
+                                        <button
+                                            className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                            onClick={handleDetectAntigravityCliPath}
+                                        >
+                                            {t('settings.advanced.detect_btn')}
+                                        </button>
+                                        {isTauri() ? (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                                onClick={handleSelectAntigravityCliPath}
+                                            >
+                                                {t('settings.advanced.select_btn')}
+                                            </button>
+                                        ) : (
+                                            <span className="self-center text-xs text-gray-400 dark:text-gray-500 italic px-2">
+                                                {t('settings.web_mode_limitation', '(Web 模式不支持)')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                                        {t('settings.advanced.antigravity_cli_path_desc', '设置您的命令行客户端 (agy) 的可执行文件路径，用于一键解除账号限制。')}
+                                    </p>
+                                    
+                                    {/* 新增：解密/修补准入限制一键修补按钮 */}
+                                    <div className={`mt-3 flex items-center gap-4 p-3 rounded-lg border ${formData.antigravity_cli_executable ? 'bg-blue-50 dark:bg-blue-950/20 border-blue-100 dark:border-blue-900/30' : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
+                                        <div className="flex-1">
+                                            <h4 className={`text-sm font-semibold ${formData.antigravity_cli_executable ? 'text-blue-900 dark:text-blue-200' : 'text-gray-500 dark:text-gray-400'}`}>
+                                                {t('settings.advanced.patch_eligibility_title', '账号准入限制解除')}
+                                            </h4>
+                                            <p className={`text-xs mt-0.5 ${formData.antigravity_cli_executable ? 'text-blue-700 dark:text-blue-300/80' : 'text-gray-400 dark:text-gray-500'}`}>
+                                                {t('settings.advanced.patch_eligibility_desc', '新版 agy 二进制强制拦截未授权账号，此操作一键跳过本地准入拦截检查。')}
+                                                {!formData.antigravity_cli_executable && " (需先在上方设置或探测路径)"}
+                                            </p>
+                                        </div>
+                                        <button
+                                            className={`px-4 py-2 rounded-lg transition-colors font-medium text-sm shadow-sm ${formData.antigravity_cli_executable ? 'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'}`}
+                                            disabled={!formData.antigravity_cli_executable}
+                                            onClick={async () => {
+                                                if (!formData.antigravity_cli_executable) return;
+                                                try {
+                                                    const res = await invoke<string>('patch_agy_binary', { filePath: formData.antigravity_cli_executable });
+                                                    showToast(res, 'success');
+                                                } catch (err) {
+                                                    showToast(String(err), 'error');
+                                                }
+                                            }}
+                                        >
+                                            {t('settings.advanced.patch_btn', '一键解除')}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Antigravity IDE 程序路径 */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
+                                        {t('settings.advanced.antigravity_ide_path', 'Antigravity IDE Path')}
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                            value={formData.antigravity_ide_executable || ''}
+                                            placeholder={t('settings.advanced.antigravity_ide_path_placeholder', 'D:\\Antigravity\\Antigravity.exe')}
+                                            onChange={(e) => setFormData({ ...formData, antigravity_ide_executable: e.target.value })}
+                                        />
+                                        {formData.antigravity_ide_executable && (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors"
+                                                onClick={() => setFormData({ ...formData, antigravity_ide_executable: undefined })}
+                                            >
+                                                {t('common.clear')}
+                                            </button>
+                                        )}
+                                        {isTauri() ? (
+                                            <button
+                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                                onClick={handleSelectAntigravityIdePath}
+                                            >
+                                                {t('settings.advanced.select_btn')}
+                                            </button>
+                                        ) : (
+                                            <span className="self-center text-xs text-gray-400 dark:text-gray-500 italic px-2">
+                                                {t('settings.web_mode_limitation', '(Web 模式不支持)')}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                                        {t('settings.advanced.antigravity_ide_path_desc', 'Specify the executable path for Antigravity IDE (code editor). Once set, account switching will strictly protect processes at this path from being terminated.')}
+                                    </p>
+                                </div>
+
+                                {/* 反重力程序启动参数 */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
+                                        {t('settings.advanced.antigravity_args')}
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 px-4 py-4 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                            value={formData.antigravity_args ? formData.antigravity_args.join(' ') : ''}
+                                            placeholder={t('settings.advanced.antigravity_args_placeholder')}
+                                            onChange={(e) => {
+                                                const args = e.target.value.trim() === '' ? [] : e.target.value.split(' ').map(arg => arg.trim()).filter(arg => arg !== '');
+                                                setFormData({ ...formData, antigravity_args: args });
+                                            }}
+                                        />
+                                        <button
+                                            className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-base-200 transition-colors"
+                                            onClick={async () => {
+                                                try {
+                                                    const args = await invoke<string[]>('get_antigravity_args');
+                                                    setFormData({ ...formData, antigravity_args: args });
+                                                    showToast(t('settings.advanced.antigravity_args_detected'), 'success');
+                                                } catch (error) {
+                                                    showToast(`${t('settings.advanced.antigravity_args_detect_error')}: ${error}`, 'error');
+                                                }
+                                            }}
+                                        >
+                                            {t('settings.advanced.detect_args_btn')}
+                                        </button>
+                                    </div>
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+                                        {t('settings.advanced.antigravity_args_desc')}
+                                    </p>
+                                </div>
+
+                                {/* 官方 Hub 客户端指纹与动态探测 */}
+                                <div className="border-t border-gray-200 dark:border-base-200 pt-4">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="font-medium text-gray-900 dark:text-base-content">
+                                                {t('proxy.config.hub.title', { defaultValue: '官方 Hub 客户端指纹' })}
+                                            </h3>
+                                            <HelpTooltip text={t('proxy.config.hub.tooltip', { defaultValue: '出站流量对齐 Google 官方 Antigravity Hub 原生客户端特征，自动维护版本号与构建 CL 编号以规避 429 配额限制。' })} />
+                                            {hubFingerprint && (
+                                                <span className={cn(
+                                                    "text-xs px-2 py-0.5 rounded-full font-mono font-medium",
+                                                    hubFingerprint.source === 'custom' && "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+                                                    hubFingerprint.source === 'remote' && "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                                                    hubFingerprint.source === 'local' && "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+                                                    hubFingerprint.source === 'baseline' && "bg-gray-100 text-gray-700 dark:bg-base-300 dark:text-gray-300",
+                                                )}>
+                                                    {hubFingerprint.source === 'custom' ? t('proxy.config.hub.source_custom', { defaultValue: '自定义' })
+                                                        : hubFingerprint.source === 'remote' ? t('proxy.config.hub.source_remote', { defaultValue: '远端探测' })
+                                                        : hubFingerprint.source === 'local' ? t('proxy.config.hub.source_local', { defaultValue: '本地应用' })
+                                                        : t('proxy.config.hub.source_baseline', { defaultValue: '稳态基准' })}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleDetectHubFingerprint}
+                                            disabled={detectingHub}
+                                            className="px-3 py-1.5 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-base-200 transition-colors text-sm flex items-center gap-1.5"
+                                        >
+                                            <RefreshCw className={cn("w-3.5 h-3.5", detectingHub && "animate-spin")} />
+                                            <span>{t('proxy.config.hub.detect_button', { defaultValue: '动态探测' })}</span>
+                                        </button>
+                                    </div>
+
+                                    {/* 生效的 User-Agent 预览 */}
+                                    <div className="bg-gray-50 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-lg p-3 text-xs font-mono text-gray-700 dark:text-gray-300 break-all select-all flex items-center justify-between gap-2 mb-3">
+                                        <span className="truncate">
+                                            {hubFingerprint?.user_agent || 'antigravity/hub/2.23.1 (...) cl=998881661'}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (hubFingerprint?.user_agent) {
+                                                    copyToClipboard(hubFingerprint.user_agent);
+                                                    setCopiedHubUa(true);
+                                                    setTimeout(() => setCopiedHubUa(false), 2000);
+                                                }
+                                            }}
+                                            className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded transition-colors shrink-0"
+                                            title={t('common.copy')}
+                                        >
+                                            {copiedHubUa ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+                                        </button>
+                                    </div>
+
+                                    {/* Hub Version & CL 自定义输入框 */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                                {t('proxy.config.hub.version_label', { defaultValue: 'Hub 版本号 (Version)' })}
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={formData.proxy?.hub_version || ''}
+                                                onChange={(e) => {
+                                                    const v = e.target.value.trim();
+                                                    setFormData({
+                                                        ...formData,
+                                                        proxy: {
+                                                            ...formData.proxy,
+                                                            hub_version: v || undefined,
+                                                        }
+                                                    });
+                                                }}
+                                                placeholder={hubFingerprint?.version || '2.23.1 (自动)'}
+                                                className="w-full px-3 py-2 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-sm font-mono text-gray-900 dark:text-base-content focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                                {t('proxy.config.hub.cl_label', { defaultValue: 'Piper 构建编号 (CL)' })}
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={formData.proxy?.hub_cl || ''}
+                                                onChange={(e) => {
+                                                    const c = e.target.value.trim();
+                                                    setFormData({
+                                                        ...formData,
+                                                        proxy: {
+                                                            ...formData.proxy,
+                                                            hub_cl: c || undefined,
+                                                        }
+                                                    });
+                                                }}
+                                                placeholder={hubFingerprint?.cl || '998881661 (自动)'}
+                                                className="w-full px-3 py-2 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-sm font-mono text-gray-900 dark:text-base-content focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                            />
+                                        </div>
+                                    </div>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                        {t('proxy.config.hub.tooltip', { defaultValue: '出站流量对齐 Google 官方 Antigravity Hub 原生客户端特征，自动维护版本号与构建 CL 编号以规避 429 配额限制。' })}
+                                    </p>
+                                </div>
+
+                                {/* Antigravity 缓存清理 */}
+                                <div className="border-t border-gray-200 dark:border-base-200 pt-4">
+                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.advanced.antigravity_cache_title')}</h3>
+                                    <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3 mb-3">
+                                        <p className="text-sm text-amber-700 dark:text-amber-400">{t('settings.advanced.antigravity_cache_warning')}</p>
+                                    </div>
+                                    <div className="bg-gray-50 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-lg p-3 mb-3">
+                                        <p className="text-sm text-gray-600 dark:text-gray-400">{t('settings.advanced.antigravity_cache_desc')}</p>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        <button
+                                            className="px-4 py-2 border border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-400 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-colors"
+                                            onClick={handleOpenClearCacheDialog}
+                                        >
+                                            {t('settings.advanced.clear_antigravity_cache')}
+                                        </button>
+                                    </div>
+                                </div>
+
+
+
+                                <div className="border-t border-gray-200 dark:border-base-200 pt-4">
+                                    <div className="space-y-3">
+                                        <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-base-200 rounded-lg border border-gray-100 dark:border-base-300">
+                                            <div>
+                                                <div className="font-medium text-gray-900 dark:text-base-content">
+                                                    {t('settings.advanced.debug_logs_title')}
+                                                </div>
+                                                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                                                    {t('settings.advanced.debug_logs_enable_desc')}
+                                                </p>
+                                            </div>
+                                            <label className="relative inline-flex items-center cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    className="sr-only peer"
+                                                    checked={formData.proxy?.debug_logging?.enabled ?? false}
+                                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({
+                                                        ...formData,
+                                                        proxy: {
+                                                            ...formData.proxy,
+                                                            debug_logging: {
+                                                                enabled: e.target.checked,
+                                                                output_dir: formData.proxy?.debug_logging?.output_dir,
+                                                            },
+                                                        },
+                                                    })}
+                                                />
+                                                <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                                            </label>
+                                        </div>
+                                        {(formData.proxy?.debug_logging?.enabled ?? false) && (
+                                            <>
+                                                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3">
+                                                    <p className="text-sm text-amber-700 dark:text-amber-400">
+                                                        {t('settings.advanced.debug_logs_desc')}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
+                                                        {t('settings.advanced.debug_log_dir')}
+                                                    </label>
+                                                    <div className="flex gap-2">
+                                                        <input
+                                                            type="text"
+                                                            className="flex-1 px-4 py-3 border border-gray-200 dark:border-base-300 rounded-lg bg-gray-50 dark:bg-base-200 text-gray-900 dark:text-base-content font-medium"
+                                                            value={formData.proxy?.debug_logging?.output_dir || ''}
+                                                            placeholder={`${dataDirPath.replace(/\/$/, '')}/debug_logs`}
+                                                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({
+                                                                ...formData,
+                                                                proxy: {
+                                                                    ...formData.proxy,
+                                                                    debug_logging: {
+                                                                        enabled: formData.proxy?.debug_logging?.enabled ?? false,
+                                                                        output_dir: e.target.value || undefined,
+                                                                    },
+                                                                },
+                                                            })}
+                                                        />
+                                                        {isTauri() && (
+                                                            <button
+                                                                className="px-4 py-2 border border-gray-200 dark:border-base-300 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors"
+                                                                onClick={handleSelectDebugLogDir}
+                                                            >
+                                                                {t('settings.advanced.select_btn')}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                                        {t('settings.advanced.debug_log_dir_hint', { path: dataDirPath.replace(/\/$/, '') })}
+                                                    </p>
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+
+                            </div>
+                        </>
+                    )}
+
+
+
+
+                    {activeTab === 'about' && (
+                        <div className="flex flex-col h-full animate-in fade-in duration-500">
+                            <div className="flex-1 flex flex-col justify-center items-center space-y-8">
+                                {/* Branding Section */}
+                                <div className="text-center space-y-4">
+                                    <div className="relative inline-block group">
+                                        <div className="absolute inset-0 bg-blue-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
+                                        <img
+                                            src="/icon.png"
+                                            alt="Antigravity Logo"
+                                            className="relative w-24 h-24 rounded-3xl shadow-2xl transform group-hover:scale-105 transition-all duration-500 rotate-3 group-hover:rotate-6 object-cover bg-white dark:bg-black"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <h3 className="text-3xl font-black text-gray-900 dark:text-base-content tracking-tight mb-2">Antigravity Manager</h3>
+                                        <div className="flex items-center justify-center gap-2 text-sm">
+                                            <span className="px-2.5 py-0.5 rounded-full bg-violet-500/10 text-violet-500 font-semibold border border-violet-500/20">
+                                                v{appVersion}
+                                            </span>
+                                            <span className="text-gray-400 dark:text-gray-600">•</span>
+                                            <span className="text-gray-500 dark:text-gray-400">轻量级账号管理 · 实时监控 · 会话日志与 Token 审计</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Cards Grid */}
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-4xl px-4">
+                                    {/* GitHub Card */}
+                                    <a
+                                        href="https://github.com/ruofeng086/Antigravity-Manager"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="bg-white dark:bg-base-100 p-5 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-violet-500/40 transition-all group flex flex-col items-center text-center gap-3 cursor-pointer"
+                                    >
+                                        <div className="p-3 bg-violet-50 dark:bg-violet-900/20 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                                            <Github className="w-6 h-6 text-violet-500" />
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">开源仓库</div>
+                                            <div className="flex items-center gap-1 font-bold text-gray-900 dark:text-base-content">
+                                                <span>ruofeng086/Antigravity-Manager</span>
+                                                <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
+                                            </div>
+                                        </div>
+                                    </a>
+
+                                    {/* Tech Stack Card */}
+                                    <div className="bg-white dark:bg-base-100 p-5 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-blue-500/40 transition-all group flex flex-col items-center text-center gap-3">
+                                        <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                                            <Activity className="w-6 h-6 text-blue-500" />
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">核心架构</div>
+                                            <div className="font-bold text-gray-900 dark:text-base-content">
+                                                Tauri v2 · Rust · React 19
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Features Card */}
+                                    <div className="bg-white dark:bg-base-100 p-5 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-emerald-500/40 transition-all group flex flex-col items-center text-center gap-3">
+                                        <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                                            <CheckCircle2 className="w-6 h-6 text-emerald-500" />
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">全维监控审计</div>
+                                            <div className="font-bold text-gray-900 dark:text-base-content">
+                                                会话追踪 · 真实路由 · TTFB/TPS
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="text-center text-xs text-gray-400 dark:text-gray-500 pt-6">
+                                    Copyright © 2026 Antigravity Manager. All rights reserved.
+                                </div>
+                            </div>
+                        </div>
+                    )
+                    }
+                </div >
+
+
+
+                <ModalDialog
+                    isOpen={isMigrateDataDirOpen}
+                    title={t('settings.advanced.data_dir_migrate_title')}
+                    type="confirm"
+                    confirmText={isMigratingDataDir ? t('common.loading') : t('common.confirm')}
+                    cancelText={t('common.cancel')}
+                    onConfirm={confirmMigrateDataDir}
+                    onCancel={() => {
+                        if (!isMigratingDataDir) {
+                            setIsMigrateDataDirOpen(false);
+                            setPendingDataDir('');
+                        }
+                    }}
+                >
+                    <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-line">
+                        {t('settings.advanced.data_dir_migrate_msg', { path: pendingDataDir })}
+                    </p>
+                </ModalDialog>
+
+                {/* Antigravity Cache Clear Modal */}
+                <ModalDialog
+                    isOpen={isClearCacheOpen}
+                    title={t('settings.advanced.clear_cache_confirm_title')}
+                    type="confirm"
+                    confirmText={isClearingCache ? t('common.clearing') : t('common.clear')}
+                    cancelText={t('common.cancel')}
+                    isDestructive={true}
+                    onConfirm={confirmClearAntigravityCache}
+                    onCancel={() => setIsClearCacheOpen(false)}
+                >
+                    <div className="space-y-3">
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                            {t('settings.advanced.clear_cache_confirm_msg')}
+                        </p>
+                        {cachePaths.length > 0 ? (
+                            <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3 max-h-40 overflow-y-auto">
+                                <ul className="text-xs font-mono text-gray-600 dark:text-gray-400 space-y-1">
+                                    {cachePaths.map((path, index) => (
+                                        <li key={index} className="truncate">• {path}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        ) : (
+                            <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3">
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    {t('settings.advanced.cache_not_found')}
+                                </p>
+                            </div>
+                        )}
+                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-2">
+                            <p className="text-xs text-amber-700 dark:text-amber-400">
+                                {t('settings.advanced.antigravity_cache_warning')}
+                            </p>
+                        </div>
+                    </div>
+                </ModalDialog>
+
+            </div>
+        </motion.div>
+    );
+}
+
+export default Settings;

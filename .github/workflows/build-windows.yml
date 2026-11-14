@@ -1,0 +1,152 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches:
+      - beta
+      - main
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish as a GitHub Release on this repository'
+        required: false
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release Tag (leave empty to auto-detect from package.json)'
+        required: false
+        default: ''
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-windows:
+    name: Build Windows Installer (.exe)
+    runs-on: windows-2025
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Version and Tag
+        id: version_info
+        shell: pwsh
+        run: |
+          $pkgVersion = (Get-Content package.json | ConvertFrom-Json).version
+          $inputTag = "${{ github.event.inputs.release_tag }}"
+          if (-not [string]::IsNullOrWhiteSpace($inputTag)) {
+            $tagName = $inputTag
+          } elseif ("${{ github.ref }}" -like "refs/tags/*") {
+            $tagName = "${{ github.ref_name }}"
+          } else {
+            $tagName = "v$pkgVersion"
+          }
+          Write-Host "Resolved Version: $pkgVersion"
+          Write-Host "Resolved Tag: $tagName"
+          "version=$pkgVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag_name=$tagName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Rust setup
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri"
+
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Disable updater artifacts without signing key
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            Write-Host "Updater signing key is configured; keeping updater artifacts enabled."
+            exit 0
+          }
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 32 | Set-Content -Path $configPath -Encoding UTF8
+          Write-Host "No updater signing key configured; disabled updater artifacts for unsigned build."
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri Windows NSIS Installer
+        run: npm run tauri build -- --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Collect and Rename Installable Executables
+        id: collect_artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-artifacts
+          $nsisExes = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe"
+          if ($nsisExes.Count -eq 0) {
+            $nsisExes = Get-ChildItem -Path "src-tauri/target/*/release/bundle/nsis/*.exe"
+          }
+          Write-Host "Found NSIS Installers:"
+          foreach ($f in $nsisExes) {
+            Write-Host " - $($f.FullName)"
+            Copy-Item -Path $f.FullName -Destination "dist-artifacts/"
+            Copy-Item -Path $f.FullName -Destination "dist-artifacts/Antigravity-Manager-Setup.exe"
+          }
+          $files = Get-ChildItem -Path "dist-artifacts"
+          Write-Host "Staged dist-artifacts:"
+          $files | ForEach-Object { Write-Host " - $($_.Name) ($($_.Length) bytes)" }
+
+      - name: Upload Windows Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Antigravity-Manager-Windows-Installer
+          path: dist-artifacts/*
+          retention-days: 30
+
+      - name: Publish or Update GitHub Release
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release != 'false')
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          tag: ${{ steps.version_info.outputs.tag_name }}
+          name: "Antigravity Manager ${{ steps.version_info.outputs.tag_name }}"
+          body: |
+            ## Antigravity Manager ${{ steps.version_info.outputs.tag_name }} 自动化发布
+            
+            专为 Antigravity 打造的轻量级账号管理、实时监控、会话级日志审计与 Token 统计系统。
+            
+            ### 核心特性：
+            - 🎯 **极简与高性能**：纯粹保留账号管理、本地代理及监控统计核心，剔除冗余商业模块，超低后台资源占用。
+            - ⚡ **实时监控**：毫秒级捕获当前请求模型、TPS 吞吐速率、平均延迟与全量请求成功率。
+            - 📜 **会话级请求日志**：
+              - **会话归属追踪**：精确关联每个请求归属哪个会话 (Session ID)。
+              - **首字节响应耗时 (TTFB)**：精确测量与展示网络首包返回速度。
+              - **真实模型路由漂移识别**：实时识别客户端请求模型与实际后端路由模型（如 `gemini-3.8-flash` ➜ `gemini-3.8-flash-control` / `gemini-3.8-flash-n`）。
+              - **生成速率 (TPS)**：实时输出速率评估与用量指标。
+              - **Payload 审计抽屉**：支持快速查看原始请求头与完整响应体。
+            - 📊 **深度 Token 统计**：无缝解析本地 Antigravity 历史会话用量，提供日/周/月多维度柱状图与明细分析。
+            - 🛡️ **开箱即用**：开机自启、本地轻量代理、自动故障重试与健康检查。
+            
+            ### 安装包下载：
+            直接在下方 Assets 下载 `Antigravity-Manager-Setup.exe` 即可一键安装使用！
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "dist-artifacts/*"
+          artifactErrorsFailBuild: false
+          replacesArtifacts: true
+          prerelease: false
+          makeLatest: true
