@@ -244,6 +244,7 @@ impl ProxyRequestLog {
             protocol: self.protocol.clone(),
             username: self.username.clone(),
             session_id: self.session_id.clone(),
+            session_title: self.session_title.clone(),
         }
     }
 }

@@ -104,7 +104,6 @@ jobs:
           Write-Host "Found NSIS Installers:"
           foreach ($f in $nsisExes) {
             Write-Host " - $($f.FullName)"
-            Copy-Item -Path $f.FullName -Destination "dist-artifacts/"
             Copy-Item -Path $f.FullName -Destination "dist-artifacts/Antigravity-Manager-Setup.exe"
           }
           $files = Get-ChildItem -Path "dist-artifacts"

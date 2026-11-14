@@ -1241,6 +1241,7 @@ pub async fn monitor_middleware(
         reasoning_tokens: None,
         protocol,
         username,
+        session_title: session_id.as_deref().and_then(crate::modules::antigravity_sync::resolve_session_title_from_db),
         session_id,
     };
 
