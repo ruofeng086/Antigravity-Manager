@@ -2167,24 +2167,51 @@ pub fn get_logs(limit: usize) -> Result<Vec<ProxyRequestLog>, String> {
 pub fn get_stats() -> Result<crate::proxy::monitor::ProxyStats, String> {
     let conn = connect_db()?;
 
-    // Optimized: Use single query instead of three separate queries
-    // Use COALESCE to handle NULL values when table is empty (SUM returns NULL for empty set)
-    let (total_requests, success_count, error_count): (u64, u64, u64) = conn
+    let (total_requests, success_count, error_count, avg_duration): (u64, u64, u64, f64) = conn
         .query_row(
             "SELECT
             COUNT(*) as total,
             COALESCE(SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END), 0) as success,
-            COALESCE(SUM(CASE WHEN status < 200 OR status >= 400 THEN 1 ELSE 0 END), 0) as error
+            COALESCE(SUM(CASE WHEN status < 200 OR status >= 400 THEN 1 ELSE 0 END), 0) as error,
+            COALESCE(AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END), 0.0) as avg_dur
          FROM request_logs",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let ten_min_ago = now_ms - 10 * 60 * 1000;
+    let recent_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM request_logs WHERE timestamp >= ?1",
+            params![ten_min_ago],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let rpm = if recent_count > 0 {
+        Some((recent_count as f64) / 10.0)
+    } else {
+        None
+    };
+
+    let mut requests_by_model = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT COALESCE(upstream_model, model, 'gemini-3.8-flash'), COUNT(*) FROM request_logs GROUP BY 1") {
+        if let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))) {
+            for (m, cnt) in rows.flatten() {
+                requests_by_model.insert(m, cnt);
+            }
+        }
+    }
 
     Ok(crate::proxy::monitor::ProxyStats {
         total_requests,
         success_count,
         error_count,
+        avg_latency_ms: if avg_duration > 0.0 { Some(avg_duration) } else { None },
+        avg_ttfb_ms: None,
+        requests_per_minute: rpm,
+        requests_by_model,
     })
 }
 

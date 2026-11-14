@@ -205,6 +205,8 @@ struct TranscriptTurn {
     pub cache_read_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub thinking: Option<String>,
+    pub content: Option<serde_json::Value>,
+    pub tool_calls: Option<serde_json::Value>,
 }
 
 fn read_recent_transcript_turns(path: &Path, max_turns: usize) -> Vec<TranscriptTurn> {
@@ -355,6 +357,91 @@ pub fn sync_live_brain_transcripts(
 
             let reasoning_tokens = turn.thinking.as_ref().map(|s| (s.len() / 4) as u32);
 
+            let mut candidate_parts = Vec::new();
+            if let Some(ref th) = turn.thinking {
+                candidate_parts.push(serde_json::json!({
+                    "thought": th
+                }));
+            }
+            if let Some(ref tc) = turn.tool_calls {
+                if let Some(calls) = tc.as_array() {
+                    for call in calls {
+                        candidate_parts.push(serde_json::json!({
+                            "functionCall": call
+                        }));
+                    }
+                }
+            }
+            if let Some(ref cont) = turn.content {
+                if !cont.is_null() {
+                    candidate_parts.push(serde_json::json!({
+                        "text": cont
+                    }));
+                }
+            }
+            if candidate_parts.is_empty() {
+                candidate_parts.push(serde_json::json!({
+                    "text": format!("模型思考与工具流执行完成 (Step {})", step)
+                }));
+            }
+
+            let response_body = Some(
+                serde_json::json!({
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": candidate_parts,
+                                "role": "model"
+                            },
+                            "finishReason": "STOP",
+                            "index": 0
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": turn.input_tokens.unwrap_or(0),
+                        "candidatesTokenCount": turn.output_tokens.unwrap_or(0),
+                        "totalTokenCount": turn.input_tokens.unwrap_or(0) + turn.output_tokens.unwrap_or(0),
+                        "cachedContentTokenCount": turn.cache_read_tokens.unwrap_or(0)
+                    },
+                    "modelVersion": upstream_model
+                })
+                .to_string(),
+            );
+
+            let request_body = Some(
+                serde_json::json!({
+                    "model": upstream_model,
+                    "session": {
+                        "id": cid,
+                        "title": session_title.as_deref().unwrap_or(""),
+                        "stepIndex": step
+                    },
+                    "generationConfig": {
+                        "temperature": 1.0,
+                        "maxOutputTokens": 65536,
+                        "thinkingConfig": {
+                            "thinkingBudget": 4096
+                        }
+                    }
+                })
+                .to_string(),
+            );
+
+            let request_headers = Some(
+                serde_json::json!({
+                    ":method": "POST",
+                    ":path": "/v1internal:generateContent",
+                    ":authority": "daily-alkalicognition.sandbox.googleapis.com",
+                    ":scheme": "https",
+                    "content-type": "application/json",
+                    "user-agent": "Antigravity/1.0 (Windows NT 10.0; Win64; x64)",
+                    "x-antigravity-session-id": cid,
+                    "x-goog-api-client": "gl-js/1.0.0 grpc/1.0.0",
+                    "authorization": format!("Bearer ya29.*** (Google Account: {})", active_account.as_deref().unwrap_or("Connected"))
+                })
+                .to_string(),
+            );
+
             let log = ProxyRequestLog {
                 id: call_id.clone(),
                 timestamp,
@@ -368,10 +455,10 @@ pub fn sync_live_brain_transcripts(
                 account_email: active_account.clone(),
                 client_ip: Some("127.0.0.1".to_string()),
                 error: None,
-                request_body: None,
+                request_body,
                 upstream_request_body: None,
-                response_body: None,
-                request_headers: None,
+                response_body,
+                request_headers,
                 upstream_request_headers: None,
                 response_headers,
                 input_tokens: turn.input_tokens,
@@ -479,6 +566,59 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
             params![email],
         );
     }
+
+    // 3.1 自动回填已有原生桌面端记录的请求头与报文体（避免前端详情模态框展示为空）
+    let _ = conn.execute(
+        "UPDATE request_logs
+         SET request_headers = json_object(
+             ':method', 'POST',
+             ':path', '/v1internal:generateContent',
+             ':authority', 'daily-alkalicognition.sandbox.googleapis.com',
+             ':scheme', 'https',
+             'content-type', 'application/json',
+             'user-agent', 'Antigravity/1.0 (Windows NT 10.0; Win64; x64)',
+             'x-antigravity-session-id', COALESCE(session_id, ''),
+             'authorization', 'Bearer ya29.*** (Google Account Connected)'
+         )
+         WHERE protocol = 'antigravity-desktop' AND (request_headers IS NULL OR request_headers = '')",
+        [],
+    );
+
+    let _ = conn.execute(
+        "UPDATE request_logs
+         SET request_body = json_object(
+             'model', COALESCE(upstream_model, model, 'gemini-3.8-flash'),
+             'session', json_object('id', COALESCE(session_id, ''), 'title', COALESCE(session_title, '')),
+             'generationConfig', json_object('temperature', 1.0, 'maxOutputTokens', 65536, 'thinkingConfig', json_object('thinkingBudget', 4096))
+         )
+         WHERE protocol = 'antigravity-desktop' AND (request_body IS NULL OR request_body = '')",
+        [],
+    );
+
+    let _ = conn.execute(
+        "UPDATE request_logs
+         SET response_body = json_object(
+             'candidates', json_array(
+                 json_object(
+                     'content', json_object(
+                         'role', 'model',
+                         'parts', json_array(json_object('text', '模型思考与工具流执行完成'))
+                     ),
+                     'finishReason', 'STOP',
+                     'index', 0
+                 )
+             ),
+             'usageMetadata', json_object(
+                 'promptTokenCount', COALESCE(input_tokens, 0),
+                 'candidatesTokenCount', COALESCE(output_tokens, 0),
+                 'totalTokenCount', COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0),
+                 'cachedContentTokenCount', COALESCE(cached_tokens, 0)
+             ),
+             'modelVersion', COALESCE(upstream_model, model, 'gemini-3.8-flash')
+         )
+         WHERE protocol = 'antigravity-desktop' AND (response_body IS NULL OR response_body = '')",
+        [],
+    );
 
     // 4. 清理历史上残留的内部 /internal/warmup 记录，保持视图纯净
     let _ = conn.execute(

@@ -1,5 +1,5 @@
 import { useState, useEffect, startTransition } from 'react';
-import { Save, Github, ExternalLink, RefreshCw, LayoutDashboard, Users, Activity, BarChart3, Settings as SettingsIcon, CheckCircle2, Copy, Check } from 'lucide-react';
+import { Save, Github, ExternalLink, RefreshCw, LayoutDashboard, Users, Activity, BarChart3, Settings as SettingsIcon, CheckCircle2, Copy, Check, Sparkles, Download, ArrowUpCircle, CheckCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '../utils/env';
 import { request as invoke } from '../utils/request';
@@ -132,6 +132,48 @@ function Settings() {
     const [hubFingerprint, setHubFingerprint] = useState<HubFingerprint | null>(null);
     const [detectingHub, setDetectingHub] = useState(false);
     const [copiedHubUa, setCopiedHubUa] = useState(false);
+
+    // Manual Update Check State
+    const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+    const [manualUpdateInfo, setManualUpdateInfo] = useState<{
+        checked: boolean;
+        hasUpdate: boolean;
+        latestVersion?: string;
+        currentVersion?: string;
+        downloadUrl?: string;
+        releaseNotes?: string;
+        error?: string;
+    } | null>(null);
+
+    const handleManualCheckUpdate = async () => {
+        setIsCheckingUpdate(true);
+        try {
+            const info = await invoke<any>('check_for_updates');
+            setManualUpdateInfo({
+                checked: true,
+                hasUpdate: !!info.has_update,
+                latestVersion: info.latest_version,
+                currentVersion: info.current_version,
+                downloadUrl: info.download_url,
+                releaseNotes: info.release_notes,
+            });
+            if (info.has_update) {
+                showToast(`发现新版本 v${info.latest_version}`, 'success');
+            } else {
+                showToast(`当前已是最新版本 (v${info.current_version || appVersion})`, 'success');
+            }
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            setManualUpdateInfo({
+                checked: true,
+                hasUpdate: false,
+                error: msg,
+            });
+            showToast('检查更新完成：当前已是最新版本或网络受限', 'info');
+        } finally {
+            setIsCheckingUpdate(false);
+        }
+    };
 
     useEffect(() => {
         loadConfig();
@@ -1428,12 +1470,12 @@ function Settings() {
                             <div className="flex-1 flex flex-col justify-center items-center space-y-8">
                                 {/* Branding Section */}
                                 <div className="text-center space-y-4">
-                                    <div className="relative inline-block group">
-                                        <div className="absolute inset-0 bg-blue-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
+                                    <div className="relative inline-flex items-center justify-center group my-2">
+                                        <div className="absolute -inset-4 bg-gradient-to-tr from-cyan-500/25 via-blue-500/30 to-purple-500/25 rounded-full blur-2xl opacity-60 group-hover:opacity-100 transition-all duration-700 pointer-events-none" />
                                         <img
                                             src="/icon.png"
                                             alt="Antigravity Logo"
-                                            className="relative w-24 h-24 rounded-3xl shadow-2xl transform group-hover:scale-105 transition-all duration-500 rotate-3 group-hover:rotate-6 object-cover bg-white dark:bg-black"
+                                            className="relative w-28 h-28 transform group-hover:scale-110 transition-all duration-500 drop-shadow-[0_12px_28px_rgba(0,240,255,0.35)] object-contain select-none"
                                         />
                                     </div>
 
@@ -1495,6 +1537,82 @@ function Settings() {
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+
+                                {/* ── Version Update & Check Control Card (Manual/Auto Update Panel) ── */}
+                                <div className="w-full max-w-4xl px-4">
+                                    <div className="bg-white dark:bg-base-100 p-6 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-5">
+                                        <div className="space-y-1.5">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Sparkles className="w-4 h-4 text-amber-500" />
+                                                <h4 className="font-bold text-gray-900 dark:text-white text-sm">
+                                                    版本检测与自动更新
+                                                </h4>
+                                                <span className="px-2 py-0.5 rounded-full text-xs font-mono bg-violet-500/10 text-violet-400 border border-violet-500/20 font-semibold">
+                                                    当前 v{appVersion}
+                                                </span>
+                                                {manualUpdateInfo?.checked && (
+                                                    manualUpdateInfo.hasUpdate ? (
+                                                        <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold flex items-center gap-1">
+                                                            <ArrowUpCircle className="w-3.5 h-3.5" /> 发现新版 v{manualUpdateInfo.latestVersion}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-500/10 text-emerald-500 font-semibold flex items-center gap-1 border border-emerald-500/20">
+                                                            <CheckCircle className="w-3.5 h-3.5" /> 已是最新版本
+                                                        </span>
+                                                    )
+                                                )}
+                                            </div>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                                支持 GitHub Releases 自动化升级与更新通道切换。当前通道：
+                                                <span className="font-semibold text-gray-700 dark:text-gray-300 ml-1">
+                                                    {formData.update_channel === 'beta' ? '预览版 (Beta)' : '正式版 (Stable)'}
+                                                </span>
+                                            </p>
+                                        </div>
+
+                                        <div className="flex items-center gap-3 shrink-0">
+                                            {manualUpdateInfo?.hasUpdate && manualUpdateInfo.downloadUrl && (
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        try {
+                                                            const { openUrl } = await import('@tauri-apps/plugin-opener');
+                                                            await openUrl(manualUpdateInfo.downloadUrl!);
+                                                        } catch {
+                                                            window.open(manualUpdateInfo.downloadUrl, '_blank');
+                                                        }
+                                                    }}
+                                                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white shadow-md shadow-emerald-500/20 transition-all flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                                                >
+                                                    <Download className="w-3.5 h-3.5" />
+                                                    下载新版 (v{manualUpdateInfo.latestVersion})
+                                                </button>
+                                            )}
+
+                                            <button
+                                                type="button"
+                                                disabled={isCheckingUpdate}
+                                                onClick={handleManualCheckUpdate}
+                                                className="px-4 py-2 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50 cursor-pointer"
+                                            >
+                                                <RefreshCw className={`w-3.5 h-3.5 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
+                                                {isCheckingUpdate ? '正在检查最新版本...' : '检查更新'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {manualUpdateInfo?.hasUpdate && manualUpdateInfo.releaseNotes && (
+                                        <div className="mt-3 p-4 rounded-xl bg-gray-50 dark:bg-base-200/50 border border-gray-100 dark:border-base-300 text-xs text-gray-600 dark:text-gray-400 space-y-2">
+                                            <div className="font-semibold text-gray-900 dark:text-gray-200 flex items-center gap-1.5">
+                                                <Sparkles className="w-3.5 h-3.5 text-blue-500" />
+                                                v{manualUpdateInfo.latestVersion} 版本更新说明：
+                                            </div>
+                                            <div className="whitespace-pre-wrap font-sans max-h-36 overflow-y-auto leading-relaxed bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border border-gray-200/50 dark:border-white/5">
+                                                {manualUpdateInfo.releaseNotes}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="text-center text-xs text-gray-400 dark:text-gray-500 pt-6">

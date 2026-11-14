@@ -933,7 +933,14 @@ const Logs: React.FC = () => {
                         )}
                       </div>
                       <pre className="p-3 rounded-lg bg-black/50 border border-white/5 font-mono text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap max-h-72">
-                        {selectedLog.response_body || '无响应报文体（或未启用报文落库）'}
+                        {(() => {
+                          if (!selectedLog.response_body) return '无响应报文体（或未启用报文落库）';
+                          try {
+                            return JSON.stringify(JSON.parse(selectedLog.response_body), null, 2);
+                          } catch {
+                            return selectedLog.response_body;
+                          }
+                        })()}
                       </pre>
                     </div>
 
@@ -951,7 +958,14 @@ const Logs: React.FC = () => {
                         )}
                       </div>
                       <pre className="p-3 rounded-lg bg-black/50 border border-white/5 font-mono text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap max-h-72">
-                        {selectedLog.request_body || '无请求报文体'}
+                        {(() => {
+                          if (!selectedLog.request_body) return '无请求报文体';
+                          try {
+                            return JSON.stringify(JSON.parse(selectedLog.request_body), null, 2);
+                          } catch {
+                            return selectedLog.request_body;
+                          }
+                        })()}
                       </pre>
                     </div>
                   </div>

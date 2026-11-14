@@ -314,9 +314,32 @@ const Monitor: React.FC = () => {
   const totalReqs = stats?.total_requests ?? 0;
   const successReqs = stats?.success_requests ?? stats?.success_count ?? 0;
   const errorReqs = stats?.error_requests ?? stats?.error_count ?? 0;
-  const avgLatency = stats?.avg_latency_ms;
+  const avgLatency = React.useMemo(() => {
+    if (stats?.avg_latency_ms != null && stats.avg_latency_ms > 0) {
+      return stats.avg_latency_ms;
+    }
+    const validDurations = logs
+      .map((l) => l.duration || l.duration_ms || 0)
+      .filter((d) => d > 0);
+    if (validDurations.length === 0) return undefined;
+    return Math.round(validDurations.reduce((a, b) => a + b, 0) / validDurations.length);
+  }, [stats?.avg_latency_ms, logs]);
+
   const avgTtfb = stats?.avg_ttfb_ms;
-  const rpm = stats?.requests_per_minute;
+
+  const rpm = React.useMemo(() => {
+    if (stats?.requests_per_minute != null && stats.requests_per_minute > 0) {
+      return stats.requests_per_minute;
+    }
+    if (logs.length < 2) return undefined;
+    const timestamps = logs.map((l) => l.timestamp || 0).filter((t) => t > 0);
+    if (timestamps.length < 2) return undefined;
+    const minT = Math.min(...timestamps);
+    const maxT = Math.max(...timestamps);
+    const diffMin = (maxT - minT) / 60000;
+    if (diffMin <= 0.05) return Number(logs.length.toFixed(1));
+    return Number((logs.length / Math.max(0.5, diffMin)).toFixed(1));
+  }, [stats?.requests_per_minute, logs]);
   const prevLatency = prevStatsRef.current?.avg_latency_ms;
 
   const latencyTrend: 'up' | 'down' | 'neutral' =

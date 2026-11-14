@@ -130,9 +130,10 @@ export const UpdateNotification: React.FC<UpdateNotificationProps> = ({ onClose 
       setDownloadProgress(100);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error('Auto update failed:', errorMsg);
+      console.warn('Auto update background check skipped or failed:', errorMsg);
       setUpdateState('error');
-      showToast(`${t('update_notification.toast.failed')}: ${errorMsg}`, 'error');
+      // 后台静默检查失败时不弹错打扰用户
+      onClose();
     }
   };
 

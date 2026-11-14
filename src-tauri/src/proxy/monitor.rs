@@ -352,6 +352,14 @@ pub struct ProxyStats {
     pub total_requests: u64,
     pub success_count: u64,
     pub error_count: u64,
+    #[serde(default)]
+    pub avg_latency_ms: Option<f64>,
+    #[serde(default)]
+    pub avg_ttfb_ms: Option<f64>,
+    #[serde(default)]
+    pub requests_per_minute: Option<f64>,
+    #[serde(default)]
+    pub requests_by_model: std::collections::HashMap<String, u64>,
 }
 
 pub struct ProxyMonitor {

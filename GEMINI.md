@@ -7,8 +7,8 @@
 - **状态管理**: Zustand 5.0 (useConfigStore, useAccountStore, useViewStore, usePedalModeStore)
 - **多语言与主题**: i18next 25.7 + 深色/浅色自适应/深空赛博朋克 Observatory
 - **开源仓库**: [ruofeng086/Antigravity-Manager](https://github.com/ruofeng086/Antigravity-Manager.git)
-- **当前版本**: v1.0.4
-- **应用图标**: AI 原生生成 Cyberpunk 玻璃拟态深空反重力核心图标 (多分辨率 16x16 ~ 1024x1024, `.ico`, `.png`, Store Logo)
+- **当前版本**: v1.0.5
+- **应用图标**: 独立透明无框 3D 反重力悬浮核心图标 (消除外围矩形与黑底，多分辨率 16x16 ~ 1024x1024, `.ico`, `.png`, Store Logo)
 
 ## 2. 核心功能模块 (六大核心功能)
 1. **仪表盘 (`src/pages/Dashboard.tsx`)**:

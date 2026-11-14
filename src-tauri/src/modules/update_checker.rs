@@ -218,14 +218,12 @@ async fn check_for_updates_internal(channel: UpdateChannel) -> Result<UpdateInfo
         }
     }
 
-    // 3. Try GitHub Raw (only applies to stable/main)
-    if channel == UpdateChannel::Stable {
-        if let Ok(info) = check_static_url(GITHUB_RAW_URL, "GitHub Raw").await {
-            return Ok(info);
-        }
-        if let Ok(info) = check_static_url(JSDELIVR_URL, "jsDelivr").await {
-            return Ok(info);
-        }
+    // 3. Try Static fallbacks (jsDelivr CDN & GitHub Raw, globally accessible with zero rate limits)
+    if let Ok(info) = check_static_url(JSDELIVR_URL, "jsDelivr").await {
+        return Ok(info);
+    }
+    if let Ok(info) = check_static_url(GITHUB_RAW_URL, "GitHub Raw").await {
+        return Ok(info);
     }
 
     Err(format!(
@@ -285,7 +283,7 @@ async fn check_updater_json_channel(channel: UpdateChannel) -> Result<UpdateInfo
         Ok(res) if res.status().is_success() => (res, target_url.to_string()),
         other => {
             if channel == UpdateChannel::Beta {
-                logger::log_info("Preview updater.json endpoint unavailable, checking latest prerelease assets from GitHub API...");
+                logger::log_info("Preview updater.json endpoint unavailable, checking latest prerelease assets or stable updater.json...");
                 if let Ok(asset_url) = fetch_prerelease_updater_json_url(&client).await {
                     let res = client
                         .get(&asset_url)
@@ -293,6 +291,16 @@ async fn check_updater_json_channel(channel: UpdateChannel) -> Result<UpdateInfo
                         .await
                         .map_err(|e| format!("Request failed: {}", e))?;
                     (res, asset_url)
+                } else if let Ok(stable_res) = client.get(STABLE_UPDATER_JSON_URL).send().await {
+                    if stable_res.status().is_success() {
+                        (stable_res, STABLE_UPDATER_JSON_URL.to_string())
+                    } else {
+                        let err_msg = match other {
+                            Ok(res) => format!("status {}", res.status()),
+                            Err(e) => e.to_string(),
+                        };
+                        return Err(format!("updater.json returned {}", err_msg));
+                    }
                 } else {
                     let err_msg = match other {
                         Ok(res) => format!("status {}", res.status()),
@@ -428,11 +436,13 @@ async fn check_github_api_channel(channel: UpdateChannel) -> Result<UpdateInfo, 
                 .await
                 .map_err(|e| format!("Failed to parse releases: {}", e))?;
 
-            // 优先查找最新的 pre-release
+            // 优先查找最新的 pre-release，若无 pre-release 则平滑回退至最新发布的正式版本
             let latest_pre = releases
-                .into_iter()
+                .iter()
                 .find(|r| r.prerelease)
-                .ok_or_else(|| "No pre-release found on GitHub".to_string())?;
+                .cloned()
+                .or_else(|| releases.first().cloned())
+                .ok_or_else(|| "No release found on GitHub".to_string())?;
 
             latest_pre
         }
