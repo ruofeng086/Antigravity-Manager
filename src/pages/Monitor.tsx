@@ -337,7 +337,7 @@ const Monitor: React.FC = () => {
   // ── Latest model from logs
   const latestModel = React.useMemo(() => {
     for (const log of logs) {
-      const m = log.mapped_model ?? log.model;
+      const m = log.upstream_model ?? log.mapped_model ?? log.model;
       if (m) return m;
     }
     return null;
@@ -458,9 +458,9 @@ const Monitor: React.FC = () => {
           delay={0}
           color="violet"
           icon={<Cpu className="w-4 h-4 text-violet-400" />}
-          label="当前模型"
-          value={latestModel ? modelShortName(latestModel) : '—'}
-          sub={latestModel ? latestModel : undefined}
+          label="当前实际路由模型"
+          value={latestModel ? latestModel : '—'}
+          sub={logs[0]?.model && latestModel !== logs[0].model ? `客户端请求: ${logs[0].model}` : (latestModel ? 'Google 物理端点' : undefined)}
         />
         <StatCard
           delay={0.05}
@@ -602,7 +602,7 @@ const Monitor: React.FC = () => {
                   const duration = log.duration_ms ?? log.duration;
                   const time = log.created_at ?? log.timestamp;
                   const reqModel = log.model;
-                  const actModel = log.mapped_model ?? log.upstream_model ?? log.model;
+                  const actModel = log.upstream_model ?? log.mapped_model ?? log.model;
                   const isRerouted = reqModel && actModel && reqModel !== actModel;
                   const ttfb = extractTtfbMs(log as any);
                   const tps = calcTps(log.output_tokens, duration);
@@ -626,7 +626,7 @@ const Monitor: React.FC = () => {
                           <div className="flex items-center gap-1.5">
                             <span
                               title={`会话: ${log.session_title || log.session_id}\nID: ${log.session_id}`}
-                              className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/20 text-violet-300 max-w-[160px] truncate block"
+                              className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/20 text-violet-300 max-w-[200px] truncate block"
                             >
                               {log.session_title || (log.session_id.length > 14
                                 ? `${log.session_id.slice(0, 6)}...${log.session_id.slice(-4)}`
@@ -659,12 +659,12 @@ const Monitor: React.FC = () => {
                             <span className="text-gray-400 text-[10px] line-through truncate max-w-[80px]" title={`请求: ${reqModel}`}>
                               {reqModel}
                             </span>
-                            <ArrowRight className="w-2.5 h-2.5 text-violet-400 shrink-0" />
+                            <ArrowRight className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
                             <span
-                              className="text-violet-300 font-medium truncate max-w-[100px]"
-                              title={`实际路由: ${actModel}`}
+                              className="text-emerald-300 font-mono text-[11px] font-medium truncate max-w-[120px]"
+                              title={`Google 真实物理路由模型: ${actModel}`}
                             >
-                              {modelShortName(actModel)}
+                              {actModel}
                             </span>
                           </div>
                         ) : (

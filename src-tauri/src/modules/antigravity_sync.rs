@@ -82,8 +82,8 @@ pub fn get_pricing_ledger_path() -> Option<PathBuf> {
     }
 }
 
-/// 从会话 SQLite 数据库 gen_metadata 中提取实际路由的模型名称 (如 gemini-3.8-flash-n / gemini-3.8-flash-low 等)
-pub fn resolve_actual_model_from_db(cascade_id: &str) -> Option<String> {
+/// 从会话 SQLite 数据库 gen_metadata 中提取实际路由的模型名称 (如 gemini-3.8-flash-n / gemini-3.8-flash-control 等)
+pub fn resolve_actual_model_from_db(cascade_id: &str, call_id: Option<&str>) -> Option<String> {
     let root = get_antigravity_root_dir()?;
     let db_path = root.join("conversations").join(format!("{}.db", cascade_id));
     if !db_path.exists() {
@@ -91,13 +91,29 @@ pub fn resolve_actual_model_from_db(cascade_id: &str) -> Option<String> {
     }
 
     let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let mut stmt = conn
-        .prepare("SELECT data FROM gen_metadata ORDER BY idx DESC LIMIT 1")
-        .ok()?;
-    let raw_data: Vec<u8> = stmt.query_row([], |row| row.get(0)).ok()?;
+
+    // 1. 如果有 call_id，优先精准匹配属于该次 call 的那一轮 gen_metadata
+    let raw_data: Option<Vec<u8>> = if let Some(cid) = call_id.filter(|s| !s.is_empty()) {
+        conn.prepare("SELECT data FROM gen_metadata WHERE instr(data, ?1) > 0 LIMIT 1")
+            .ok()
+            .and_then(|mut stmt| stmt.query_row(params![cid], |row| row.get(0)).ok())
+    } else {
+        None
+    };
+
+    // 2. 如果未找到对应 call_id，回退到最新一轮 gen_metadata
+    let raw_data = match raw_data {
+        Some(d) => d,
+        None => {
+            let mut stmt = conn
+                .prepare("SELECT data FROM gen_metadata ORDER BY idx DESC LIMIT 1")
+                .ok()?;
+            stmt.query_row([], |row| row.get(0)).ok()?
+        }
+    };
 
     static MODEL_REGEX: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(r"(gemini-(?:3\.[0-9]|2\.[0-9]|1\.[0-9])-(?:flash|pro)(?:-[a-z0-9]+)?|claude-(?:3-5|3-7|4-[0-9]|opus|sonnet|haiku)(?:-[a-z0-9]+)?|gpt-(?:4o|4|oss|o1|o3)(?:-[a-z0-9]+)?)").unwrap()
+        Regex::new(r"(gemini-(?:3\.[0-9]|2\.[0-9]|1\.[0-9])-(?:flash|pro)(?:-[a-z0-9]+)+|claude-(?:3-5|3-7|4-[0-9]|opus|sonnet|haiku)(?:-[a-z0-9]+)+|gpt-(?:4o|4|oss|o1|o3)(?:-[a-z0-9]+)+)").unwrap()
     });
 
     let mut last_match = None;
@@ -154,30 +170,7 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
     // 0. 确保 session_title 字段存在
     let _ = conn.execute("ALTER TABLE request_logs ADD COLUMN session_title TEXT", []);
 
-    // 1. 获取当前活跃账号邮箱，并补充到历史记录中
-    let active_email = crate::modules::account::get_current_account()
-        .ok()
-        .flatten()
-        .map(|a| a.email)
-        .or_else(|| {
-            crate::modules::account::load_accounts()
-                .ok()
-                .and_then(|accs| accs.into_iter().find(|a| a.is_active).map(|a| a.email))
-        })
-        .or_else(|| {
-            crate::modules::account::load_accounts()
-                .ok()
-                .and_then(|accs| accs.into_iter().next().map(|a| a.email))
-        });
-
-    if let Some(ref email) = active_email {
-        let _ = conn.execute(
-            "UPDATE request_logs SET account_email = ?1 WHERE account_email IS NULL OR account_email = ''",
-            params![email],
-        );
-    }
-
-    // 2. 自动回填已有会话记录的 session_title
+    // 1. 自动回填已有会话记录的 session_title
     if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT session_id FROM request_logs WHERE session_id IS NOT NULL AND (session_title IS NULL OR session_title = '')") {
         if let Ok(sids) = stmt.query_map([], |row| row.get::<_, String>(0)) {
             for sid in sids.flatten() {
@@ -191,7 +184,28 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
         }
     }
 
-    // 3. 清理历史上残留的内部 /internal/warmup 记录，保持视图纯净
+    // 2. 自动回填已有记录中缺失的 Google 物理路由模型 (如 gemini-3.8-flash-n)
+    if let Ok(mut stmt) = conn.prepare("SELECT id, session_id FROM request_logs WHERE session_id IS NOT NULL AND (upstream_model IS NULL OR upstream_model = model)") {
+        if let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) {
+            for (cid, sid) in rows.flatten() {
+                if let Some(phys) = resolve_actual_model_from_db(&sid, Some(&cid)) {
+                    let _ = conn.execute(
+                        "UPDATE request_logs SET upstream_model = ?1 WHERE id = ?2",
+                        params![phys, cid],
+                    );
+                }
+            }
+        }
+    }
+
+    // 3. 原生桌面端记录 (protocol = 'antigravity-desktop') 不含代理账号池身份，
+    // 清除此前可能误填的单点 active_email，确保只显示真实发出请求的账号
+    let _ = conn.execute(
+        "UPDATE request_logs SET account_email = NULL WHERE protocol = 'antigravity-desktop'",
+        [],
+    );
+
+    // 4. 清理历史上残留的内部 /internal/warmup 记录，保持视图纯净
     let _ = conn.execute(
         "DELETE FROM request_logs WHERE url LIKE '%/internal/warmup%' OR method = 'WARMUP'",
         [],
@@ -222,9 +236,9 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
         let requested_model = r.model_key.clone().or_else(|| r.model.clone());
         let mapped_model = r.model.clone();
 
-        // 尝试从本地对话元数据提取上游真实路由模型
+        // 尝试从本地对话元数据提取上游真实物理路由模型 (如 gemini-3.8-flash-n)
         let upstream_model = if let Some(ref cid) = session_id {
-            resolve_actual_model_from_db(cid)
+            resolve_actual_model_from_db(cid, Some(&call_id))
         } else {
             None
         }
@@ -277,7 +291,7 @@ pub fn sync_desktop_records(max_records: usize) -> Result<Vec<ProxyRequestLog>, 
             model: requested_model.clone(),
             mapped_model: mapped_model.clone(),
             upstream_model: upstream_model.clone(),
-            account_email: active_email.clone(),
+            account_email: None,
             client_ip: Some("127.0.0.1".to_string()),
             error: None,
             request_body: None,

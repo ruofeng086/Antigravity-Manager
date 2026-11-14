@@ -501,7 +501,7 @@ const Logs: React.FC = () => {
                   const ttfb = extractTtfbMs(log);
                   const tps = calcTps(log.output_tokens, log.duration);
                   const reqModel = log.model;
-                  const actModel = log.mapped_model || log.upstream_model || log.model;
+                  const actModel = log.upstream_model || log.mapped_model || log.model;
                   const isRerouted = reqModel && actModel && reqModel !== actModel;
 
                   // TTFB Color scheme
@@ -539,7 +539,7 @@ const Logs: React.FC = () => {
                                 setSessionFilter(log.session_id!);
                               }}
                               title={`会话: ${log.session_title || log.session_id}\nID: ${log.session_id}\n点击筛选该会话`}
-                              className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 transition-colors max-w-[160px] truncate block cursor-pointer"
+                              className="px-2 py-0.5 rounded font-medium text-[11px] bg-violet-500/10 border border-violet-500/25 text-violet-300 hover:bg-violet-500/20 transition-colors max-w-[200px] truncate block cursor-pointer"
                             >
                               {log.session_title || (log.session_id.length > 16
                                 ? `${log.session_id.slice(0, 8)}...${log.session_id.slice(-6)}`
@@ -573,10 +573,10 @@ const Logs: React.FC = () => {
                               <span className="text-gray-400 font-mono text-[11px] line-through truncate max-w-[110px]" title={`请求模型: ${reqModel}`}>
                                 {reqModel}
                               </span>
-                              <ArrowRight className="w-3 h-3 text-violet-400 shrink-0" />
+                              <ArrowRight className="w-3 h-3 text-emerald-400 shrink-0" />
                               <span
-                                className="px-1.5 py-0.5 rounded font-mono font-medium text-[11px] bg-violet-500/15 border border-violet-500/30 text-violet-300 truncate max-w-[130px]"
-                                title={`实际路由模型: ${actModel}`}
+                                className="px-1.5 py-0.5 rounded font-mono font-medium text-[11px] bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 truncate max-w-[140px]"
+                                title={`Google 真实物理路由端点: ${actModel}`}
                               >
                                 {actModel}
                               </span>
@@ -820,10 +820,15 @@ const Logs: React.FC = () => {
                           </span>
                         </div>
                         <div>
-                          <span className="text-gray-500 block mb-0.5">实际路由/生效模型:</span>
-                          <span className="font-mono font-medium text-violet-400 break-all">
-                            {selectedLog.mapped_model || selectedLog.upstream_model || selectedLog.model || '—'}
+                          <span className="text-gray-500 block mb-0.5">实际物理路由端点 (Google 真实模型):</span>
+                          <span className="font-mono font-medium text-emerald-400 break-all">
+                            {selectedLog.upstream_model || selectedLog.mapped_model || selectedLog.model || '—'}
                           </span>
+                          {selectedLog.mapped_model && selectedLog.mapped_model !== (selectedLog.upstream_model || selectedLog.model) && (
+                            <span className="text-[10px] text-gray-400 block mt-0.5">
+                              品类/计费档位: {selectedLog.mapped_model}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -863,9 +868,17 @@ const Logs: React.FC = () => {
                         <span className="text-gray-500">HTTP 状态码</span>
                         <span className="font-mono text-white">{selectedLog.status}</span>
                       </div>
-                      <div className="flex justify-between py-1 border-b border-white/5">
-                        <span className="text-gray-500">账号邮箱</span>
-                        <span className="font-mono text-white">{selectedLog.account_email || 'ruofeng086@gmail.com'}</span>
+                      <div className="flex justify-between items-center py-1 border-b border-white/5">
+                        <span className="text-gray-500">实际执行账号</span>
+                        {selectedLog.account_email ? (
+                          <span className="font-mono text-emerald-400 font-medium">{selectedLog.account_email}</span>
+                        ) : selectedLog.protocol === 'antigravity-desktop' ? (
+                          <span className="font-mono text-violet-300 text-[11px] bg-violet-500/10 px-2 py-0.5 rounded border border-violet-500/20">
+                            Antigravity Desktop (原生桌面端直接调用)
+                          </span>
+                        ) : (
+                          <span className="font-mono text-gray-500">—</span>
+                        )}
                       </div>
                       <div className="flex justify-between py-1 border-b border-white/5">
                         <span className="text-gray-500">客户端 IP</span>
