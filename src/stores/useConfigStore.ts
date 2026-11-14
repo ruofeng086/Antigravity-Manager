@@ -2,6 +2,9 @@ import { create } from 'zustand';
 import { AppConfig } from '../types/config';
 import * as configService from '../services/configService';
 import i18n from '../i18n';
+import { isTauri } from '../utils/env';
+import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 
 // 规范化语言编码 (兼容方言与区域代码别名)
 export function normalizeLanguageCode(code: string): string {
@@ -25,9 +28,7 @@ let saveSequence = 0;
 
 async function flushPersist(config: AppConfig): Promise<void> {
     await configService.saveConfig(config);
-    const { isTauri } = await import('../utils/env');
     if (isTauri()) {
-        const { invoke } = await import('@tauri-apps/api/core');
         await invoke('set_window_theme', { theme: config.theme }).catch(() => {});
     }
 }
@@ -124,9 +125,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         const newConfig = { ...latest, theme };
         await get().saveConfig(newConfig, true);
 
-        const { isTauri } = await import('../utils/env');
         if (isTauri()) {
-            const { emit } = await import('@tauri-apps/api/event');
             await emit('app://theme-changed', { theme }).catch(() => {});
         }
     },
@@ -150,9 +149,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         await i18n.changeLanguage(normalized);
         await savePromise;
 
-        const { isTauri } = await import('../utils/env');
         if (isTauri()) {
-            const { emit } = await import('@tauri-apps/api/event');
             await emit('app://language-changed', { language: normalized }).catch(() => {});
         }
     },

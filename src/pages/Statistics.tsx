@@ -29,6 +29,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { isTauri } from '../utils/env';
+import { invoke } from '@tauri-apps/api/core';
 
 // ─── Default Archive Path ───────────────────────────────────────────────────────
 const DEFAULT_ARCHIVE_PATH = 'E:\\Users\\Darren\\.gemini\\antigravity\\token_usage_archive_v2.json';
@@ -136,7 +137,6 @@ export default function Statistics() {
     try {
       let rawJson: string | null = null;
       if (isTauri()) {
-        const { invoke } = await import('@tauri-apps/api/core');
         try {
           rawJson = await invoke<string>('get_antigravity_token_archive_data');
         } catch {

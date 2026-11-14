@@ -29,6 +29,9 @@ import { isTauri } from "../utils/env";
 import { request as invoke } from "../utils/request";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
+import { listen } from "@tauri-apps/api/event";
+import { join } from "@tauri-apps/api/path";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 type FilterType = "all" | "pro" | "ultra" | "enterprise" | "free";
 type ViewMode = "list" | "grid";
@@ -74,15 +77,13 @@ function Accounts() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     if (isTauri()) {
-      import('@tauri-apps/api/event').then(({ listen }) => {
-        listen<{ current: number; total: number; success: number; failed: number; current_email?: string }>(
-          'accounts://import-progress',
-          (event) => {
-            setImportProgress(event.payload);
-          }
-        ).then((unsub) => {
-          unlisten = unsub;
-        });
+      listen<{ current: number; total: number; success: number; failed: number; current_email?: string }>(
+        'accounts://import-progress',
+        (event) => {
+          setImportProgress(event.payload);
+        }
+      ).then((unsub) => {
+        unlisten = unsub;
       });
     }
     return () => {
@@ -529,15 +530,13 @@ function Accounts() {
       // 2. Determine Path & Export
       if (isTauri()) {
         let path: string | null = null;
-        const { join } = await import("@tauri-apps/api/path");
 
         if (config?.default_export_path) {
           // Use default path
           path = await join(config.default_export_path, fileName);
         } else {
           // Use Native Dialog
-          const { save } = await import("@tauri-apps/plugin-dialog");
-          path = await save({
+          path = await saveDialog({
             filters: [
               {
                 name: "JSON",
@@ -685,8 +684,7 @@ function Accounts() {
   const handleImportJson = async () => {
     if (isTauri()) {
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({
+        const selected = await openDialog({
           multiple: false,
           filters: [
             {

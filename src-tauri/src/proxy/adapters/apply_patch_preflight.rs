@@ -14,6 +14,8 @@
 //! - **Add File / Delete File 不碰**(无锚点,不涉及匹配)。读不到文件 / 无 cwd → 原样放行。
 //! - 每条修复 / 放行都记进 apply-patch 诊断页,可审计。
 
+#![allow(dead_code, unused_variables, unused_imports)]
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

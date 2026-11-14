@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save, Check, Bot, Laptop, ShieldCheck, Zap, Wrench, RotateCcw, RefreshCw, FolderOpen, HelpCircle, BookOpen, Sparkles, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ExperimentalConfig } from "../../types/config";
 import { showToast } from "../common/ToastContainer";
 import ModalDialog from "../common/ModalDialog";
@@ -79,8 +80,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
 
     const handleBrowsePath = async () => {
         try {
-            const { open } = await import("@tauri-apps/plugin-dialog");
-            const selected = await open({
+            const selected = await openDialog({
                 title: t("proxy.agent_settings.claude_desktop.browse_title_app", { defaultValue: "选择 Claude.app 应用程序或二进制文件" }),
                 multiple: false,
                 directory: false,
@@ -92,8 +92,7 @@ export const AgentSettings: React.FC<AgentSettingsProps> = ({
         } catch (err: any) {
             console.warn("打开文件对话框失败，尝试目录模式:", err);
             try {
-                const { open } = await import("@tauri-apps/plugin-dialog");
-                const selected = await open({
+                const selected = await openDialog({
                     title: t("proxy.agent_settings.claude_desktop.browse_title_dir", { defaultValue: "选择 Claude.app 应用程序目录" }),
                     multiple: false,
                     directory: true,

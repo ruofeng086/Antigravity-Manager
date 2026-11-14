@@ -39,15 +39,40 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom'],
-          'router': ['react-router', 'react-router-dom'],
-          'charts': ['recharts'],
-          'animation': ['framer-motion'],
-          'icons': ['lucide-react'],
-          'i18n': ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
-          'state': ['zustand'],
-          'utils': ['date-fns', 'clsx', 'tailwind-merge'],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (
+              id.includes('react') ||
+              id.includes('scheduler') ||
+              id.includes('i18next')
+            ) {
+              return 'react-vendor';
+            }
+            if (id.includes('react-router')) {
+              return 'router';
+            }
+            if (id.includes('recharts')) {
+              return 'charts';
+            }
+            if (id.includes('framer-motion')) {
+              return 'animation';
+            }
+            if (id.includes('lucide-react') || id.includes('@ant-design/icons')) {
+              return 'icons';
+            }
+            if (id.includes('zustand')) {
+              return 'state';
+            }
+            if (id.includes('date-fns') || id.includes('clsx') || id.includes('tailwind-merge')) {
+              return 'utils';
+            }
+            if (id.includes('@tauri-apps')) {
+              return 'tauri';
+            }
+            if (id.includes('antd') || id.includes('@lobehub') || id.includes('@emotion')) {
+              return 'ui-vendor';
+            }
+          }
         },
       },
     },

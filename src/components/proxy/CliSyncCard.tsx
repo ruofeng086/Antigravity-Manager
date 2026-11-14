@@ -28,6 +28,7 @@ import { useProxyModels } from '../../hooks/useProxyModels';
 import GroupedSelect from '../common/GroupedSelect';
 import { Claude, OpenAI, Gemini, Grok, OpenCode, Github as LobeGithub, HermesAgent, OpenClaw, DeepSeek } from '@lobehub/icons';
 import { JeikCodeIcon } from '../common/JeikCodeIcon';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 interface CliSyncCardProps {
     proxyUrl: string;
@@ -333,7 +334,6 @@ export const CliSyncCard = ({ proxyUrl, apiKey, className }: CliSyncCardProps) =
 
     const openExternalUrl = async (url: string) => {
         try {
-            const { openUrl } = await import('@tauri-apps/plugin-opener');
             await openUrl(url);
         } catch {
             window.open(url, '_blank', 'noopener,noreferrer');

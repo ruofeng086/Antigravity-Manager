@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+
 // 探测环境
 const isTauri = typeof window !== 'undefined' && (!!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__);
 
@@ -205,7 +207,6 @@ export async function request<T>(cmd: string, args?: any): Promise<T> {
   // 1. Tauri 环境：直接使用 invoke ...
   if (isTauri) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       return await invoke<T>(cmd, args);
     } catch (error) {
       console.error(`Tauri Invoke Error [${cmd}]:`, error);

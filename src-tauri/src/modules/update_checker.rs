@@ -119,7 +119,7 @@ impl UpdateSettings {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
     html_url: String,
@@ -131,7 +131,7 @@ struct GitHubRelease {
     assets: Vec<GitHubReleaseAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GitHubReleaseAsset {
     name: String,
     browser_download_url: String,

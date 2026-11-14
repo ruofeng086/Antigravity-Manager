@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { isTauri } from '../utils/env';
 import { request as invoke } from '../utils/request';
 import { open } from '@tauri-apps/plugin-dialog';
+import { getVersion } from '@tauri-apps/api/app';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useConfigStore } from '../stores/useConfigStore';
 import { AppConfig, HubFingerprint } from '../types/config';
 import ModalDialog from '../components/common/ModalDialog';
@@ -209,9 +211,7 @@ function Settings() {
 
         // 获取应用真实版本号
         if (isTauri()) {
-            import('@tauri-apps/api/app').then(({ getVersion }) => {
-                getVersion().then(v => setAppVersion(v)).catch(() => {});
-            });
+            getVersion().then(v => setAppVersion(v)).catch(() => {});
         }
     }, [loadConfig]);
 
@@ -1577,7 +1577,6 @@ function Settings() {
                                                     type="button"
                                                     onClick={async () => {
                                                         try {
-                                                            const { openUrl } = await import('@tauri-apps/plugin-opener');
                                                             await openUrl(manualUpdateInfo.downloadUrl!);
                                                         } catch {
                                                             window.open(manualUpdateInfo.downloadUrl, '_blank');

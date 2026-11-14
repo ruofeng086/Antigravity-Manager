@@ -31,6 +31,7 @@ import {
 } from 'recharts';
 import { request } from '../utils/request';
 import { extractTtfbMs, calcTps } from './Logs';
+import { listen } from '@tauri-apps/api/event';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -270,26 +271,24 @@ const Monitor: React.FC = () => {
 
     // Listen for real-time proxy request events
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<ProxyLog>('proxy://request', (event) => {
-        if (event.payload) {
-          const newLog = event.payload;
-          setLogs((prev) => [newLog, ...prev.slice(0, 49)]);
-          setStats((prev) => {
-            if (!prev) return prev;
-            const isSuccess = (newLog.status ?? 200) < 400;
-            return {
-              ...prev,
-              total_requests: (prev.total_requests || 0) + 1,
-              success_requests: isSuccess ? ((prev.success_requests ?? prev.success_count ?? 0) + 1) : prev.success_requests,
-              success_count: isSuccess ? ((prev.success_count ?? 0) + 1) : prev.success_count,
-              error_requests: !isSuccess ? ((prev.error_requests ?? prev.error_count ?? 0) + 1) : prev.error_requests,
-              error_count: !isSuccess ? ((prev.error_count ?? 0) + 1) : prev.error_count,
-            };
-          });
-        }
-      }).then((fn) => { unlisten = fn; });
-    }).catch(() => {});
+    listen<ProxyLog>('proxy://request', (event) => {
+      if (event.payload) {
+        const newLog = event.payload;
+        setLogs((prev) => [newLog, ...prev.slice(0, 49)]);
+        setStats((prev) => {
+          if (!prev) return prev;
+          const isSuccess = (newLog.status ?? 200) < 400;
+          return {
+            ...prev,
+            total_requests: (prev.total_requests || 0) + 1,
+            success_requests: isSuccess ? ((prev.success_requests ?? prev.success_count ?? 0) + 1) : prev.success_requests,
+            success_count: isSuccess ? ((prev.success_count ?? 0) + 1) : prev.success_count,
+            error_requests: !isSuccess ? ((prev.error_requests ?? prev.error_count ?? 0) + 1) : prev.error_requests,
+            error_count: !isSuccess ? ((prev.error_count ?? 0) + 1) : prev.error_count,
+          };
+        });
+      }
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
 
     const handleVisibility = () => {
       visibleRef.current = !document.hidden;

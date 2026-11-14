@@ -6,6 +6,7 @@ import { Update, check as tauriCheck } from '@tauri-apps/plugin-updater';
 import { relaunch as tauriRelaunch } from '@tauri-apps/plugin-process';
 import { isTauri } from '../utils/env';
 import { showToast } from './common/ToastContainer';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 interface UpdateInfo {
   has_update: boolean;
@@ -95,7 +96,6 @@ export const UpdateNotification: React.FC<UpdateNotificationProps> = ({ onClose 
         showToast(t('update_notification.toast.not_ready'), 'info');
         if (info.download_url) {
           try {
-            const { openUrl } = await import('@tauri-apps/plugin-opener');
             await openUrl(info.download_url);
           } catch (e) {
             console.error('Failed to open download url:', e);
@@ -296,7 +296,6 @@ export const UpdateNotification: React.FC<UpdateNotificationProps> = ({ onClose 
                 onClick={async () => {
                   if (updateInfo) {
                     try {
-                      const { openUrl } = await import('@tauri-apps/plugin-opener');
                       await openUrl(updateInfo.download_url);
                     } catch (e) {
                       window.open(updateInfo.download_url, '_blank', 'noopener,noreferrer');
