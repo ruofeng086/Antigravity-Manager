@@ -47,6 +47,7 @@ interface TokenArchiveData {
   firstUseDate: string;
   updatedAt: string;
   maxConversations: number;
+  totalConversations?: number;
   costEstimate?: {
     pricedCostUSD: number;
     pricedRequestsCount: number;
@@ -59,6 +60,9 @@ interface TokenArchiveData {
       thinkingTokens: number;
     };
     byModel?: Record<string, { requests: number; costUSD: number; tokens: number }>;
+  };
+  costEstimateCurrentMonth?: {
+    pricedCostUSD: number;
   };
   referenceCost?: {
     all: {
@@ -293,9 +297,9 @@ export default function Statistics() {
     const totalNet = (totalInput + totalOutput) > 0 ? (totalInput + totalOutput) : 186_200_000;
     const totalCache = all?.cacheTokens ?? 4_960_000_000;
     const curMonthNet = ((curMonth?.inputTokens ?? 0) + (curMonth?.outputTokens ?? 0)) || Math.round(totalNet * 0.459);
-    const totalCostUSD = 557.59;
-    const currentMonthCostUSD = 256.12;
-    const totalConvs = archiveData?.maxConversations || 529;
+    const totalCostUSD = archiveData?.costEstimate?.pricedCostUSD ?? 557.59;
+    const currentMonthCostUSD = archiveData?.costEstimateCurrentMonth?.pricedCostUSD ?? 256.12;
+    const totalConvs = archiveData?.maxConversations || archiveData?.totalConversations || 529;
 
     const count = trendData.length || 1;
     const latest = trendData[trendData.length - 1];
@@ -487,7 +491,7 @@ export default function Statistics() {
     const grand = dTotal + cTotal + lTotal || 1;
 
     return [
-      { name: 'Antigravity IDE 客户端', tokens: dTotal, pct: ((dTotal / grand) * 100).toFixed(1), icon: MonitorIcon, color: SOURCE_COLORS.desktop },
+      { name: 'Antigravity Desktop 客户端', tokens: dTotal, pct: ((dTotal / grand) * 100).toFixed(1), icon: MonitorIcon, color: SOURCE_COLORS.desktop },
       { name: 'Antigravity CLI / 终端', tokens: cTotal, pct: ((cTotal / grand) * 100).toFixed(1), icon: Terminal, color: SOURCE_COLORS.cli },
       { name: '历史早期会话归档', tokens: lTotal, pct: ((lTotal / grand) * 100).toFixed(1), icon: HardDrive, color: SOURCE_COLORS.legacyUnallocated },
     ];
@@ -874,7 +878,7 @@ export default function Statistics() {
               调用渠道与来源分布
             </h3>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              IDE 图形客户端与 CLI 命令行会话分别贡献的 Token 比例
+              Antigravity Desktop 桌面端与 CLI 命令行会话分别贡献的 Token 比例
             </p>
           </div>
 

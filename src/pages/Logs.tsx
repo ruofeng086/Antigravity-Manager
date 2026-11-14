@@ -871,7 +871,14 @@ const Logs: React.FC = () => {
                       <div className="flex justify-between items-center py-1 border-b border-white/5">
                         <span className="text-gray-500">实际执行账号</span>
                         {selectedLog.account_email ? (
-                          <span className="font-mono text-emerald-400 font-medium">{selectedLog.account_email}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-emerald-400 font-medium">{selectedLog.account_email}</span>
+                            {selectedLog.protocol === 'antigravity-desktop' && (
+                              <span className="text-[10px] text-violet-300 bg-violet-500/10 px-1.5 py-0.5 rounded border border-violet-500/20">
+                                桌面端执行账号
+                              </span>
+                            )}
+                          </div>
                         ) : selectedLog.protocol === 'antigravity-desktop' ? (
                           <span className="font-mono text-violet-300 text-[11px] bg-violet-500/10 px-2 py-0.5 rounded border border-violet-500/20">
                             Antigravity Desktop (原生桌面端直接调用)

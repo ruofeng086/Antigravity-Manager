@@ -1289,19 +1289,26 @@ pub async fn get_antigravity_args() -> Result<Vec<String>, String> {
     }
 }
 
-/// 获取 Antigravity Token 历史归档数据
+/// 获取 Antigravity Token 历史归档数据（附带实时当日数据与真实会话数增强）
 #[tauri::command]
 pub async fn get_antigravity_token_archive_data() -> Result<String, String> {
     if let Some(root) = crate::modules::antigravity_sync::get_antigravity_root_dir() {
         let v2 = root.join("token_usage_archive_v2.json");
-        if v2.exists() {
-            if let Ok(c) = std::fs::read_to_string(&v2) {
-                return Ok(c);
-            }
-        }
         let v1 = root.join("token_usage_archive_v1.json");
-        if v1.exists() {
-            if let Ok(c) = std::fs::read_to_string(&v1) {
+        let path = if v2.exists() {
+            Some(v2)
+        } else if v1.exists() {
+            Some(v1)
+        } else {
+            None
+        };
+
+        if let Some(p) = path {
+            if let Ok(c) = std::fs::read_to_string(&p) {
+                if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(&c) {
+                    crate::modules::antigravity_sync::augment_archive_with_live_data(&mut json_val);
+                    return Ok(serde_json::to_string(&json_val).unwrap_or(c));
+                }
                 return Ok(c);
             }
         }
